@@ -6,17 +6,26 @@ SnapRenderer::SnapRenderer() {}
 SnapRenderer::~SnapRenderer() { DestroyResources(); }
 
 void SnapRenderer::CreateResources(ID2D1DCRenderTarget* renderTarget) {
-    if (snapLineBrush) return;
+    if (!renderTarget) return;
 
-    if (renderTarget) {
-        renderTarget->CreateSolidColorBrush(
-            D2D1::ColorF(0.31f, 0.67f, 1.0f, 0.8f),
-            &snapLineBrush);
+    if (snapLineBrush && resourceTarget == renderTarget) return;
+
+    // A brush cannot be used with a different Direct2D render target. This
+    // happens when a monitor reconnect recreates the DIB/DC target.
+    DestroyResources();
+
+    HRESULT hr = renderTarget->CreateSolidColorBrush(
+        D2D1::ColorF(0.31f, 0.67f, 1.0f, 0.8f),
+        &snapLineBrush);
+    if (SUCCEEDED(hr)) {
+        resourceTarget = renderTarget;
+        resourceTarget->AddRef();
     }
 }
 
 void SnapRenderer::DestroyResources() {
     SafeRelease(snapLineBrush);
+    SafeRelease(resourceTarget);
 }
 
 void SnapRenderer::DrawSnapLines(
@@ -26,11 +35,11 @@ void SnapRenderer::DrawSnapLines(
 {
     if (!renderTarget || lines.empty()) return;
 
-    if (!snapLineBrush) {
+    if (!snapLineBrush || resourceTarget != renderTarget) {
         CreateResources(renderTarget);
     }
 
-    if (!snapLineBrush) return;
+    if (!snapLineBrush || resourceTarget != renderTarget) return;
 
     for (const auto& line : lines) {
         if (!line.visible) continue;

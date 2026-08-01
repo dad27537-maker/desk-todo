@@ -3,6 +3,7 @@
 #include "Services/DesktopPathService.h"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -20,8 +21,8 @@ constexpr UINT_PTR TimerId = 1;
 void ApplyCardShape(HWND window) {
     RECT client{};
     if (!window || !GetClientRect(window, &client)) return;
-    HRGN region = CreateRoundRectRgn(0, 0, client.right + 1,
-                                     client.bottom + 1, 28, 28);
+    HRGN region = CreateRoundRectRgn(0, 0, client.right,
+                                     client.bottom, 28, 28);
     if (region) SetWindowRgn(window, region, TRUE);
 }
 
@@ -168,19 +169,38 @@ void PomodoroWidgetWindow::ToggleTimer() {
 RECT PomodoroWidgetWindow::StartButtonRect() const {
     RECT client{};
     GetClientRect(window_, &client);
-    return { 36, client.bottom - 56, client.right / 2 - 6,
-             client.bottom - 20 };
+    return { Scale(36), client.bottom - Scale(56),
+             client.right / 2 - Scale(6), client.bottom - Scale(20) };
 }
 RECT PomodoroWidgetWindow::ResetButtonRect() const {
     RECT client{};
     GetClientRect(window_, &client);
-    return { client.right / 2 + 6, client.bottom - 56,
-             client.right - 36, client.bottom - 20 };
+    return { client.right / 2 + Scale(6), client.bottom - Scale(56),
+             client.right - Scale(36), client.bottom - Scale(20) };
 }
 RECT PomodoroWidgetWindow::CloseButtonRect() const {
     RECT client{};
     GetClientRect(window_, &client);
-    return { client.right - 42, 12, client.right - 14, 40 };
+    return { client.right - Scale(42), Scale(12),
+             client.right - Scale(14), Scale(40) };
+}
+
+float PomodoroWidgetWindow::UiScale() const {
+    RECT client{};
+    if (!window_ || !GetClientRect(window_, &client) ||
+        client.right <= 0 || client.bottom <= 0) {
+        return 1.0f;
+    }
+    const float widthScale = static_cast<float>(client.right) /
+        static_cast<float>(WindowWidth);
+    const float heightScale = static_cast<float>(client.bottom) /
+        static_cast<float>(WindowHeight);
+    return (std::clamp)((std::max)(widthScale, heightScale), 0.92f, 1.35f);
+}
+
+int PomodoroWidgetWindow::Scale(int value) const {
+    return (std::max)(1, static_cast<int>(std::lround(
+        static_cast<float>(value) * UiScale())));
 }
 
 void PomodoroWidgetWindow::Paint(HDC dc) {
@@ -188,17 +208,18 @@ void PomodoroWidgetWindow::Paint(HDC dc) {
     GetClientRect(window_, &client);
     FillRounded(dc, client, 28, RGB(238, 234, 236));
 
-    HFONT titleFont = CreateFontW(-17, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+    HFONT titleFont = CreateFontW(-Scale(17), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH, L"Segoe UI Variable Display");
-    HFONT timerFont = CreateFontW(-48, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+    HFONT timerFont = CreateFontW(-Scale(48), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH, L"Segoe UI Variable Display");
-    HFONT bodyFont = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+    HFONT bodyFont = CreateFontW(-Scale(15), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH, L"Segoe UI Variable Text");
 
-    DrawLabel(dc, L"专注计时", { 20, 13, 190, 38 }, titleFont,
+    DrawLabel(dc, L"专注计时", { Scale(20), Scale(13),
+        client.right - Scale(80), Scale(38) }, titleFont,
         RGB(45, 42, 47), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     DrawLabel(dc, L"×", CloseButtonRect(), titleFont,
               RGB(112, 107, 114), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -206,26 +227,31 @@ void PomodoroWidgetWindow::Paint(HDC dc) {
     wchar_t timeText[16]{};
     swprintf_s(timeText, L"%02d:%02d", timer_.remainingSeconds / 60,
                timer_.remainingSeconds % 60);
-    DrawLabel(dc, timeText, { 34, 52, client.right - 34, 126 }, timerFont,
+    DrawLabel(dc, timeText, { Scale(34), Scale(50),
+        client.right - Scale(34), Scale(112) }, timerFont,
               RGB(28, 27, 30), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     const std::wstring phase = timer_.focusPhase ? L"专注" : L"短休息";
     const std::wstring subtitle = phase + L" · 已完成 " +
         std::to_wstring(timer_.completedFocusSessions) + L" 轮";
-    DrawLabel(dc, subtitle, { 20, 106, client.right - 20, 128 }, bodyFont,
+    DrawLabel(dc, subtitle, { Scale(20), Scale(116),
+        client.right - Scale(20), Scale(138) }, bodyFont,
         RGB(112, 107, 114), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-    RECT progressTrack{ 36, 158, client.right - 36, 164 };
-    FillRounded(dc, progressTrack, 6, RGB(216, 211, 216));
+    RECT progressTrack{ Scale(36), Scale(158),
+                        client.right - Scale(36), Scale(164) };
+    FillRounded(dc, progressTrack, Scale(6), RGB(216, 211, 216));
     const int duration = PomodoroTimer::PhaseDuration(timer_);
     const double completed = 1.0 - static_cast<double>(timer_.remainingSeconds) / duration;
     RECT progress = progressTrack;
     progress.right = progress.left + static_cast<int>((progressTrack.right - progressTrack.left) *
         std::clamp(completed, 0.0, 1.0));
-    if (progress.right > progress.left) FillRounded(dc, progress, 6, RGB(151, 140, 153));
+    if (progress.right > progress.left) {
+        FillRounded(dc, progress, Scale(6), RGB(151, 140, 153));
+    }
 
-    FillRounded(dc, StartButtonRect(), 12, RGB(91, 84, 94));
-    FillRounded(dc, ResetButtonRect(), 12, RGB(220, 215, 220));
+    FillRounded(dc, StartButtonRect(), Scale(12), RGB(91, 84, 94));
+    FillRounded(dc, ResetButtonRect(), Scale(12), RGB(220, 215, 220));
     DrawLabel(dc, timer_.running ? L"暂停" : L"开始", StartButtonRect(), bodyFont,
               RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     DrawLabel(dc, L"重置", ResetButtonRect(), bodyFont,
@@ -258,6 +284,13 @@ LRESULT PomodoroWidgetWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
         info->ptMinTrackSize = { MinimumWindowWidth, MinimumWindowHeight };
         return 0;
     }
+    case WM_NCCALCSIZE:
+        if (wp) {
+            auto* size = reinterpret_cast<NCCALCSIZE_PARAMS*>(lp);
+            size->rgrc[0] = size->rgrc[1];
+            return 0;
+        }
+        break;
     case WM_NCHITTEST: {
         POINT point{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
         ScreenToClient(window_, &point);
@@ -280,6 +313,8 @@ LRESULT PomodoroWidgetWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
     }
     case WM_SIZE:
         ApplyCardShape(window_);
+        RedrawWindow(window_, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
         return 0;
     case WM_PAINT: {
         PAINTSTRUCT paint{};
@@ -347,6 +382,8 @@ LRESULT PomodoroWidgetWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_EXITSIZEMOVE:
+        RedrawWindow(window_, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
         SaveState(true);
         return 0;
     case WM_CAPTURECHANGED:

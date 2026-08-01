@@ -36,6 +36,8 @@ private:
     void LoadState();
     void SaveState(bool visible);
     void ToggleTimer();
+    float UiScale() const;
+    int Scale(int value) const;
     void Paint(HDC dc);
     RECT StartButtonRect() const;
     RECT ResetButtonRect() const;

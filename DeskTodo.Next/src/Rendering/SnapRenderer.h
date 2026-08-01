@@ -20,4 +20,8 @@ public:
 
 private:
     ID2D1SolidColorBrush* snapLineBrush = nullptr;
+    // Direct2D resources are owned by the render target that created them.
+    // Keep the target alive so a newly-created target cannot reuse the same
+    // address while the old brush is still cached.
+    ID2D1DCRenderTarget* resourceTarget = nullptr;
 };

@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 #include <string>
+#include <vector>
 
 enum class ItemContextMenuResult {
     Cancelled,
@@ -17,11 +18,21 @@ public:
     // nearest-empty-cell substitution. Supports negative multi-monitor coords.
     static bool RestorePathToDesktopPosition(const std::wstring& path,
                                              POINT physicalScreenPoint);
+    // Performs one non-blocking positioning attempt. Topology recovery uses
+    // this in small timer-driven batches so Explorer retries never stall the
+    // overlay's pointer-message loop.
+    static bool TryRestorePathToDesktopPosition(
+        const std::wstring& path, POINT physicalScreenPoint);
     static bool GetPathPositionOnDesktop(const std::wstring& path, POINT& physicalScreenPoint);
     // Removes/restores only the desktop IShellView representation. The real
     // path and its attributes are never changed.
     static bool SetPathSuppressedOnDesktop(const std::wstring& path, bool suppressed);
     static bool IsPathSuppressedOnDesktop(const std::wstring& path);
+    // Replaces the set of ordinary desktop paths whose saved monitor is
+    // currently offline. This reason is independent from logical-fence
+    // suppression, so reconnecting a monitor cannot expose fence members.
+    static bool SetOfflineMonitorDesktopPaths(
+        const std::vector<std::wstring>& paths);
     // Rebinds the view-scoped filter once and reconciles queued logical
     // members using exact Shell children only. The real filesystem paths remain
     // untouched and visible in ordinary Explorer folder windows.

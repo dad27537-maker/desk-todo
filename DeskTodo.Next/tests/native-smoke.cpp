@@ -590,6 +590,22 @@ int main() {
           reconnectedIconPoint.x == 2070 &&
           reconnectedIconPoint.y == 150,
           "reconnected mixed-DPI monitor restores the saved icon position");
+    auto replacementSecondary = secondary;
+    replacementSecondary.stableId = L"secondary-device-after-dock-reconnect";
+    MonitorService::DisplayTopologySnapshot replacementIconTopology;
+    replacementIconTopology.virtualScreen = dualTopology.virtualScreen;
+    replacementIconTopology.monitors = { primary, replacementSecondary };
+    replacementIconTopology.signature =
+        MonitorService::BuildTopologySignature(replacementIconTopology);
+    POINT replacementIdentityPoint{};
+    Check(reloadedSecondaryAnchor !=
+              reloadedIconLayout.Anchors().end() &&
+          DesktopIconLayoutService::ResolveOnlinePoint(
+              *reloadedSecondaryAnchor, replacementIconTopology,
+              replacementIdentityPoint) &&
+          replacementIdentityPoint.x == 2070 &&
+          replacementIdentityPoint.y == 150,
+          "desktop icon anchor survives a unique monitor identity replacement");
     SetEnvironmentVariableW(L"DESKTODO_DESKTOP_ROOT", nullptr);
     SetEnvironmentVariableW(L"DESKTODO_DATA_ROOT", nullptr);
 

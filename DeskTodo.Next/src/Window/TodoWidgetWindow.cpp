@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -144,8 +145,8 @@ void FillRounded(HDC dc, const RECT& rect, int radius, COLORREF color) {
 void ApplyCardShape(HWND window) {
     RECT client{};
     if (!window || !GetClientRect(window, &client)) return;
-    HRGN region = CreateRoundRectRgn(0, 0, client.right + 1,
-                                     client.bottom + 1, 28, 28);
+    HRGN region = CreateRoundRectRgn(0, 0, client.right,
+                                     client.bottom, 28, 28);
     if (region) SetWindowRgn(window, region, TRUE);
 }
 
@@ -392,6 +393,24 @@ void TodoWidgetWindow::AddInputTask() {
     InvalidateRect(window_, nullptr, FALSE);
 }
 
+float TodoWidgetWindow::UiScale() const {
+    RECT client{};
+    if (!window_ || !GetClientRect(window_, &client) ||
+        client.right <= 0 || client.bottom <= 0) {
+        return 1.0f;
+    }
+    const float widthScale = static_cast<float>(client.right) /
+        static_cast<float>(WindowWidth);
+    const float heightScale = static_cast<float>(client.bottom) /
+        static_cast<float>(WindowHeight);
+    return (std::clamp)((std::max)(widthScale, heightScale), 0.92f, 1.35f);
+}
+
+int TodoWidgetWindow::Scale(int value) const {
+    return (std::max)(1, static_cast<int>(std::lround(
+        static_cast<float>(value) * UiScale())));
+}
+
 void TodoWidgetWindow::ClampScroll() {
     firstVisible_ = (std::clamp)(firstVisible_, 0,
         (std::max)(0, static_cast<int>(items_.size()) - VisibleRowCount()));
@@ -400,46 +419,51 @@ void TodoWidgetWindow::ClampScroll() {
 int TodoWidgetWindow::VisibleRowCount() const {
     RECT client{};
     if (!window_ || !GetClientRect(window_, &client)) return 4;
-    return (std::max)(1L, (client.bottom - 164) / RowHeight);
+    return (std::max)(1, (static_cast<int>(client.bottom) - Scale(164)) /
+        Scale(RowHeight));
 }
 
 RECT TodoWidgetWindow::AddButtonRect() const {
     RECT client{};
     GetClientRect(window_, &client);
-    return { client.right - 68, client.bottom - 46, client.right - 20, client.bottom - 14 };
+    return { client.right - Scale(68), client.bottom - Scale(46),
+             client.right - Scale(20), client.bottom - Scale(14) };
 }
 
 RECT TodoWidgetWindow::CloseButtonRect() const {
     RECT client{};
     GetClientRect(window_, &client);
-    return { client.right - 38, 10, client.right - 12, 36 };
+    return { client.right - Scale(38), Scale(10),
+             client.right - Scale(12), Scale(36) };
 }
 
 RECT TodoWidgetWindow::SortButtonRect() const {
     RECT client{};
     GetClientRect(window_, &client);
-    return { (std::max)(190L, client.right - 178), 10,
-             client.right - 46, 36 };
+    return { (std::max)(Scale(190), static_cast<int>(client.right) - Scale(178)), Scale(10),
+             client.right - Scale(46), Scale(36) };
 }
 
 RECT TodoWidgetWindow::PriorityButtonRect() const {
     RECT client{};
     GetClientRect(window_, &client);
-    return { 20, client.bottom - 82, 112, client.bottom - 52 };
+    return { Scale(20), client.bottom - Scale(82), Scale(112),
+             client.bottom - Scale(52) };
 }
 
 RECT TodoWidgetWindow::DueDatePickerRect() const {
     RECT client{};
     GetClientRect(window_, &client);
-    return { 122, client.bottom - 82, client.right - 20,
-             client.bottom - 52 };
+    return { Scale(122), client.bottom - Scale(82),
+             client.right - Scale(20), client.bottom - Scale(52) };
 }
 
 RECT TodoWidgetWindow::RowRect(int row) const {
     RECT client{};
     GetClientRect(window_, &client);
-    return { 20, 72 + row * RowHeight, client.right - 20,
-             72 + row * RowHeight + RowHeight - 4 };
+    const int top = Scale(72) + row * Scale(RowHeight);
+    return { Scale(20), top, client.right - Scale(20),
+             top + Scale(RowHeight - 4) };
 }
 
 void TodoWidgetWindow::LayoutControls() {
@@ -447,8 +471,9 @@ void TodoWidgetWindow::LayoutControls() {
     RECT client{};
     GetClientRect(window_, &client);
     const RECT add = AddButtonRect();
-    if (input_) MoveWindow(input_, 20, client.bottom - 46,
-                           (std::max)(80L, add.left - 30L), 32, TRUE);
+    if (input_) MoveWindow(input_, Scale(20), client.bottom - Scale(46),
+                           (std::max)(Scale(80), static_cast<int>(add.left) - Scale(30)),
+                           Scale(32), TRUE);
     if (addButton_) MoveWindow(addButton_, add.left, add.top,
                               add.right - add.left, add.bottom - add.top, TRUE);
     const RECT priority = PriorityButtonRect();
@@ -462,9 +487,28 @@ void TodoWidgetWindow::LayoutControls() {
     if (editingIndex_ >= firstVisible_ &&
         editingIndex_ < firstVisible_ + VisibleRowCount() && itemEditor_) {
         const RECT row = RowRect(editingIndex_ - firstVisible_);
-        MoveWindow(itemEditor_, row.left + 38, row.top + 3,
-                   row.right - row.left - 70, 25, TRUE);
+        MoveWindow(itemEditor_, row.left + Scale(38), row.top + Scale(3),
+                   row.right - row.left - Scale(70), Scale(25), TRUE);
     }
+}
+
+void TodoWidgetWindow::UpdateControlFont() {
+    HFONT nextFont = CreateFontW(-Scale(16), 0, 0, 0, FW_NORMAL,
+        FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
+        L"Segoe UI Variable Text");
+    if (!nextFont) return;
+    HFONT oldFont = inputFont_;
+    inputFont_ = nextFont;
+    if (input_) SendMessageW(input_, WM_SETFONT,
+                             reinterpret_cast<WPARAM>(inputFont_), TRUE);
+    if (itemEditor_) SendMessageW(itemEditor_, WM_SETFONT,
+                                  reinterpret_cast<WPARAM>(inputFont_), TRUE);
+    if (priorityButton_) SendMessageW(priorityButton_, WM_SETFONT,
+                                      reinterpret_cast<WPARAM>(inputFont_), TRUE);
+    if (dueDatePicker_) SendMessageW(dueDatePicker_, WM_SETFONT,
+                                     reinterpret_cast<WPARAM>(inputFont_), TRUE);
+    if (oldFont) DeleteObject(oldFont);
 }
 
 void TodoWidgetWindow::ApplySort() {
@@ -654,39 +698,41 @@ void TodoWidgetWindow::Paint(HDC dc) {
     RECT client{};
     GetClientRect(window_, &client);
     FillRounded(dc, client, 28, CardBackground);
-    HFONT titleFont = CreateFontW(-18, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+    HFONT titleFont = CreateFontW(-Scale(18), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH, L"Segoe UI Variable Display");
-    HFONT bodyFont = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+    HFONT bodyFont = CreateFontW(-Scale(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH, L"Segoe UI Variable Text");
-    HFONT doneFont = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, TRUE, FALSE,
+    HFONT doneFont = CreateFontW(-Scale(16), 0, 0, 0, FW_NORMAL, FALSE, TRUE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH, L"Segoe UI Variable Text");
-    HFONT smallFont = CreateFontW(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+    HFONT smallFont = CreateFontW(-Scale(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH, L"Segoe UI Variable Text");
 
     const int remaining = TodoList::Remaining(items_);
     const std::wstring title = L"今日清单 · 剩余 " + std::to_wstring(remaining);
     const RECT sortButton = SortButtonRect();
-    DrawLabel(dc, title, { 20, 13, sortButton.left - 8, 39 },
+    DrawLabel(dc, title, { Scale(20), Scale(13), sortButton.left - Scale(8), Scale(39) },
               titleFont, CardText,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    FillRounded(dc, sortButton, 12, RGB(220, 215, 220));
+    FillRounded(dc, sortButton, Scale(12), RGB(220, 215, 220));
     DrawLabel(dc, SortLabel(sortMode_), sortButton, smallFont,
               CardMutedText,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     DrawLabel(dc, L"×", CloseButtonRect(), titleFont, CardMutedText,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-    RECT track{ 20, 50, client.right - 20, 55 };
-    FillRounded(dc, track, 5, RGB(216, 211, 216));
+    RECT track{ Scale(20), Scale(50), client.right - Scale(20), Scale(55) };
+    FillRounded(dc, track, Scale(5), RGB(216, 211, 216));
     if (!items_.empty()) {
         const double completed = static_cast<double>(items_.size() - remaining) / items_.size();
         RECT progress = track;
         progress.right = progress.left + static_cast<int>((track.right - track.left) * completed);
-        if (progress.right > progress.left) FillRounded(dc, progress, 5, RGB(151, 140, 153));
+        if (progress.right > progress.left) {
+            FillRounded(dc, progress, Scale(5), RGB(151, 140, 153));
+        }
     }
 
     const std::wstring today = DateAfterDays(0);
@@ -695,25 +741,27 @@ void TodoWidgetWindow::Paint(HDC dc) {
         if (index >= static_cast<int>(items_.size())) break;
         const TodoItem& item = items_[index];
         const RECT rowRect = RowRect(row);
-        FillRounded(dc, rowRect, 10, CardSurface);
+        FillRounded(dc, rowRect, Scale(10), CardSurface);
         RECT priorityStrip{
-            rowRect.left + 5, rowRect.top + 7,
-            rowRect.left + 9, rowRect.bottom - 7
+            rowRect.left + Scale(5), rowRect.top + Scale(7),
+            rowRect.left + Scale(9), rowRect.bottom - Scale(7)
         };
-        FillRounded(dc, priorityStrip, 4, PriorityColor(item.priority));
+        FillRounded(dc, priorityStrip, Scale(4), PriorityColor(item.priority));
         RECT checkbox{
-            rowRect.left + 14, rowRect.top + 15,
-            rowRect.left + 32, rowRect.top + 33
+            rowRect.left + Scale(14), rowRect.top + Scale(15),
+            rowRect.left + Scale(32), rowRect.top + Scale(33)
         };
-        FillRounded(dc, checkbox, 5, item.completed ? RGB(151, 140, 153) : RGB(76, 72, 80));
+        FillRounded(dc, checkbox, Scale(5),
+                    item.completed ? RGB(151, 140, 153) : RGB(76, 72, 80));
         if (item.completed) {
             DrawLabel(dc, L"✓", checkbox, bodyFont, RGB(255, 255, 255),
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
         RECT textRect{
-            rowRect.left + 40, rowRect.top + (item.dueDate.empty() ? 5 : 2),
-            rowRect.right - 54,
-            rowRect.top + (item.dueDate.empty() ? 42 : 25)
+            rowRect.left + Scale(40),
+            rowRect.top + Scale(item.dueDate.empty() ? 5 : 2),
+            rowRect.right - Scale(54),
+            rowRect.top + Scale(item.dueDate.empty() ? 42 : 25)
         };
         if (index != editingIndex_) {
             DrawLabel(dc, item.text, textRect, item.completed ? doneFont : bodyFont,
@@ -724,8 +772,8 @@ void TodoWidgetWindow::Paint(HDC dc) {
             const bool overdue = !item.completed &&
                 item.dueDate < today;
             RECT dateRect{
-                rowRect.left + 40, rowRect.top + 25,
-                rowRect.right - 54, rowRect.bottom - 3
+                rowRect.left + Scale(40), rowRect.top + Scale(25),
+                rowRect.right - Scale(54), rowRect.bottom - Scale(3)
             };
             DrawLabel(dc, L"截止 " + item.dueDate, dateRect, smallFont,
                       overdue ? RGB(208, 65, 65) :
@@ -734,16 +782,19 @@ void TodoWidgetWindow::Paint(HDC dc) {
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE |
                       DT_END_ELLIPSIS);
         }
-        RECT editHint{ rowRect.right - 52, rowRect.top, rowRect.right - 28, rowRect.bottom };
+        RECT editHint{ rowRect.right - Scale(52), rowRect.top,
+                       rowRect.right - Scale(28), rowRect.bottom };
         DrawLabel(dc, L"✎", editHint, bodyFont, CardMutedText,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        RECT deleteRect{ rowRect.right - 28, rowRect.top, rowRect.right - 4, rowRect.bottom };
+        RECT deleteRect{ rowRect.right - Scale(28), rowRect.top,
+                         rowRect.right - Scale(4), rowRect.bottom };
         DrawLabel(dc, L"×", deleteRect, bodyFont, RGB(135, 130, 140),
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
 
     if (items_.empty()) {
-        RECT emptyRect{ 30, 92, client.right - 30, client.bottom - 102 };
+        RECT emptyRect{ Scale(30), Scale(92), client.right - Scale(30),
+                        client.bottom - Scale(102) };
         DrawLabel(dc, L"还没有待办事项", emptyRect, bodyFont,
                   CardMutedText,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -804,9 +855,7 @@ LRESULT TodoWidgetWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
         };
         InitCommonControlsEx(&commonControls);
         inputBrush_ = CreateSolidBrush(CardSurface);
-        inputFont_ = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH, L"Segoe UI Variable Text");
+        UpdateControlFont();
         input_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
             ES_AUTOHSCROLL, 20, 258, 262, 32, window_, nullptr, instance_, nullptr);
         addButton_ = CreateWindowExW(0, L"BUTTON", L"+", WS_CHILD | WS_VISIBLE |
@@ -827,12 +876,7 @@ LRESULT TodoWidgetWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
             WS_CHILD | WS_VISIBLE | WS_TABSTOP |
             DTS_SHORTDATEFORMAT | DTS_SHOWNONE,
             0, 0, 0, 0, window_, nullptr, instance_, nullptr);
-        SendMessageW(input_, WM_SETFONT, reinterpret_cast<WPARAM>(inputFont_), TRUE);
-        SendMessageW(itemEditor_, WM_SETFONT, reinterpret_cast<WPARAM>(inputFont_), TRUE);
-        SendMessageW(priorityButton_, WM_SETFONT,
-                     reinterpret_cast<WPARAM>(inputFont_), TRUE);
-        SendMessageW(dueDatePicker_, WM_SETFONT,
-                     reinterpret_cast<WPARAM>(inputFont_), TRUE);
+        UpdateControlFont();
         SendMessageW(input_, EM_SETLIMITTEXT,
                      TodoList::MaxTextLength, 0);
         SendMessageW(itemEditor_, EM_SETLIMITTEXT,
@@ -852,6 +896,13 @@ LRESULT TodoWidgetWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
         info->ptMinTrackSize = { MinimumWindowWidth, MinimumWindowHeight };
         return 0;
     }
+    case WM_NCCALCSIZE:
+        if (wp) {
+            auto* size = reinterpret_cast<NCCALCSIZE_PARAMS*>(lp);
+            size->rgrc[0] = size->rgrc[1];
+            return 0;
+        }
+        break;
     case WM_NCHITTEST: {
         POINT point{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
         ScreenToClient(window_, &point);
@@ -874,6 +925,7 @@ LRESULT TodoWidgetWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
     }
     case WM_SIZE:
         ApplyCardShape(window_);
+        UpdateControlFont();
         LayoutControls();
         ClampScroll();
         InvalidateRect(window_, nullptr, FALSE);
@@ -892,9 +944,9 @@ LRESULT TodoWidgetWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
     case WM_DRAWITEM: {
         const auto* draw = reinterpret_cast<DRAWITEMSTRUCT*>(lp);
         if (draw && draw->CtlID == AddButtonId) {
-            FillRounded(draw->hDC, draw->rcItem, 10,
+            FillRounded(draw->hDC, draw->rcItem, Scale(10),
                         draw->itemState & ODS_SELECTED ? RGB(76, 70, 80) : RGB(91, 84, 94));
-            HFONT font = CreateFontW(-20, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            HFONT font = CreateFontW(-Scale(20), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                 DEFAULT_PITCH, L"Segoe UI Variable Display");
             DrawLabel(draw->hDC, L"+", draw->rcItem, font, RGB(255, 255, 255),
@@ -904,8 +956,8 @@ LRESULT TodoWidgetWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
         }
         if (draw && draw->CtlID == PriorityButtonId) {
             const COLORREF color = PriorityColor(inputPriority_);
-            FillRounded(draw->hDC, draw->rcItem, 8, color);
-            HFONT font = CreateFontW(-13, 0, 0, 0, FW_SEMIBOLD,
+            FillRounded(draw->hDC, draw->rcItem, Scale(8), color);
+            HFONT font = CreateFontW(-Scale(13), 0, 0, 0, FW_SEMIBOLD,
                 FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                 OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                 CLEARTYPE_QUALITY, DEFAULT_PITCH,

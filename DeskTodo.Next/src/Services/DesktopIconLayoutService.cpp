@@ -17,7 +17,8 @@
 namespace {
 
 constexpr uint32_t StateMagic = 0x49445444;  // "DTDI"
-constexpr uint32_t StateVersion = 1;
+constexpr uint32_t CurrentStateVersion = 2;
+constexpr uint32_t MinimumStateVersion = 1;
 constexpr uint32_t MaximumAnchorCount = 100000;
 constexpr uint32_t MaximumPathLength = 32768;
 constexpr uint32_t MaximumMonitorIdLength = 4096;
@@ -119,6 +120,79 @@ bool SamePlacement(const MonitorService::MonitorRelativePoint& left,
         left.x96 == right.x96 && left.y96 == right.y96;
 }
 
+bool SameRect(const RECT& left, const RECT& right) {
+    return left.left == right.left && left.top == right.top &&
+        left.right == right.right && left.bottom == right.bottom;
+}
+
+void CaptureMonitorSnapshot(
+    DesktopIconAnchor& anchor,
+    const MonitorService::MonitorSnapshot& monitor) {
+    anchor.monitorRect = monitor.monitorRect;
+    anchor.workArea = monitor.workArea;
+    anchor.dpiX = monitor.dpiX ? monitor.dpiX : 96;
+    anchor.dpiY = monitor.dpiY ? monitor.dpiY : 96;
+    anchor.primary = monitor.primary;
+    anchor.hasMonitorSnapshot = true;
+}
+
+bool SameMonitorSnapshot(
+    const DesktopIconAnchor& anchor,
+    const MonitorService::MonitorSnapshot& monitor) {
+    return anchor.hasMonitorSnapshot &&
+        SameRect(anchor.monitorRect, monitor.monitorRect) &&
+        SameRect(anchor.workArea, monitor.workArea) &&
+        anchor.dpiX == (monitor.dpiX ? monitor.dpiX : 96) &&
+        anchor.dpiY == (monitor.dpiY ? monitor.dpiY : 96) &&
+        anchor.primary == monitor.primary;
+}
+
+const MonitorService::MonitorSnapshot* FindAnchorMonitor(
+    const DesktopIconAnchor& anchor,
+    const MonitorService::DisplayTopologySnapshot& topology) {
+    if (const auto* exact = MonitorService::FindMonitorById(
+            topology, anchor.placement.monitorId)) {
+        return exact;
+    }
+    if (!anchor.hasMonitorSnapshot) return nullptr;
+
+    // Prefer an exact geometry/DPI match. It safely recovers the common case
+    // where a dock changes the CCD device path but Windows restores the same
+    // physical panel to the same desktop slot.
+    const MonitorService::MonitorSnapshot* match = nullptr;
+    for (const auto& monitor : topology.monitors) {
+        if (!SameMonitorSnapshot(anchor, monitor)) continue;
+        if (match) return nullptr;  // Ambiguous identical displays.
+        match = &monitor;
+    }
+    if (match) return match;
+
+    // Coordinates may shift when the primary display changes. Recover only a
+    // unique panel with the same physical/work-area size, DPI and role.
+    const LONG savedMonitorWidth =
+        anchor.monitorRect.right - anchor.monitorRect.left;
+    const LONG savedMonitorHeight =
+        anchor.monitorRect.bottom - anchor.monitorRect.top;
+    const LONG savedWorkWidth = anchor.workArea.right - anchor.workArea.left;
+    const LONG savedWorkHeight = anchor.workArea.bottom - anchor.workArea.top;
+    for (const auto& monitor : topology.monitors) {
+        const bool compatible =
+            monitor.monitorRect.right - monitor.monitorRect.left ==
+                savedMonitorWidth &&
+            monitor.monitorRect.bottom - monitor.monitorRect.top ==
+                savedMonitorHeight &&
+            monitor.workArea.right - monitor.workArea.left == savedWorkWidth &&
+            monitor.workArea.bottom - monitor.workArea.top == savedWorkHeight &&
+            (monitor.dpiX ? monitor.dpiX : 96) == anchor.dpiX &&
+            (monitor.dpiY ? monitor.dpiY : 96) == anchor.dpiY &&
+            monitor.primary == anchor.primary;
+        if (!compatible) continue;
+        if (match) return nullptr;
+        match = &monitor;
+    }
+    return match;
+}
+
 }
 
 bool DesktopIconLayoutService::Load() {
@@ -137,7 +211,9 @@ bool DesktopIconLayoutService::Load() {
     if (!ReadValue(stream, magic) ||
         !ReadValue(stream, version) ||
         !ReadValue(stream, count) ||
-        magic != StateMagic || version != StateVersion ||
+        magic != StateMagic ||
+        version < MinimumStateVersion ||
+        version > CurrentStateVersion ||
         count > MaximumAnchorCount) {
         anchors_.clear();
         return false;
@@ -160,6 +236,29 @@ bool DesktopIconLayoutService::Load() {
                             anchor.placement.monitorId)) {
             anchors_.clear();
             return false;
+        }
+        if (version >= 2) {
+            uint32_t primary = 0;
+            uint32_t hasMonitorSnapshot = 0;
+            if (!ReadValue(stream, anchor.monitorRect.left) ||
+                !ReadValue(stream, anchor.monitorRect.top) ||
+                !ReadValue(stream, anchor.monitorRect.right) ||
+                !ReadValue(stream, anchor.monitorRect.bottom) ||
+                !ReadValue(stream, anchor.workArea.left) ||
+                !ReadValue(stream, anchor.workArea.top) ||
+                !ReadValue(stream, anchor.workArea.right) ||
+                !ReadValue(stream, anchor.workArea.bottom) ||
+                !ReadValue(stream, anchor.dpiX) ||
+                !ReadValue(stream, anchor.dpiY) ||
+                !ReadValue(stream, primary) ||
+                !ReadValue(stream, hasMonitorSnapshot)) {
+                anchors_.clear();
+                return false;
+            }
+            anchor.primary = primary != 0;
+            anchor.hasMonitorSnapshot = hasMonitorSnapshot != 0;
+            if (anchor.dpiX == 0) anchor.dpiX = 96;
+            if (anchor.dpiY == 0) anchor.dpiY = 96;
         }
         anchor.placement.valid =
             !anchor.path.empty() && !anchor.placement.monitorId.empty();
@@ -190,7 +289,7 @@ bool DesktopIconLayoutService::Save() const {
     std::vector<uint8_t> bytes;
     bytes.reserve(16 + sorted.size() * 128);
     AppendBytes(bytes, StateMagic);
-    AppendBytes(bytes, StateVersion);
+    AppendBytes(bytes, CurrentStateVersion);
     const uint32_t count = static_cast<uint32_t>(sorted.size());
     AppendBytes(bytes, count);
     for (const auto& anchor : sorted) {
@@ -209,6 +308,21 @@ bool DesktopIconLayoutService::Save() const {
         AppendBytes(bytes, anchor.placement.y96);
         AppendWideString(bytes, anchor.path);
         AppendWideString(bytes, anchor.placement.monitorId);
+        AppendBytes(bytes, anchor.monitorRect.left);
+        AppendBytes(bytes, anchor.monitorRect.top);
+        AppendBytes(bytes, anchor.monitorRect.right);
+        AppendBytes(bytes, anchor.monitorRect.bottom);
+        AppendBytes(bytes, anchor.workArea.left);
+        AppendBytes(bytes, anchor.workArea.top);
+        AppendBytes(bytes, anchor.workArea.right);
+        AppendBytes(bytes, anchor.workArea.bottom);
+        AppendBytes(bytes, anchor.dpiX);
+        AppendBytes(bytes, anchor.dpiY);
+        const uint32_t primary = anchor.primary ? 1u : 0u;
+        const uint32_t hasMonitorSnapshot =
+            anchor.hasMonitorSnapshot ? 1u : 0u;
+        AppendBytes(bytes, primary);
+        AppendBytes(bytes, hasMonitorSnapshot);
     }
     return WriteDurableFile(StatePath(), bytes);
 }
@@ -279,8 +393,7 @@ bool DesktopIconLayoutService::UpdateFromPositions(
             });
         if (existing != anchors_.end() &&
             existing->placement.valid &&
-            !MonitorService::FindMonitorById(
-                topology, existing->placement.monitorId)) {
+            !FindAnchorMonitor(*existing, topology)) {
             // Explorer temporarily projects icons from a disconnected display
             // onto an online display. Keep the offline monitor anchor intact;
             // otherwise the temporary projection becomes the new permanent
@@ -288,14 +401,23 @@ bool DesktopIconLayoutService::UpdateFromPositions(
             continue;
         }
         if (existing == anchors_.end()) {
-            anchors_.push_back({ NormalizePathIdentity(position.first),
-                                 placement });
+            DesktopIconAnchor anchor;
+            anchor.path = NormalizePathIdentity(position.first);
+            anchor.placement = placement;
+            CaptureMonitorSnapshot(anchor, *monitor);
+            anchors_.push_back(std::move(anchor));
             changed = true;
-        } else if (!SamePlacement(existing->placement, placement) ||
-                   existing->path != NormalizePathIdentity(position.first)) {
-            existing->path = NormalizePathIdentity(position.first);
+        } else {
+            const std::wstring normalizedPath =
+                NormalizePathIdentity(position.first);
+            const bool anchorChanged =
+                !SamePlacement(existing->placement, placement) ||
+                existing->path != normalizedPath ||
+                !SameMonitorSnapshot(*existing, *monitor);
+            existing->path = normalizedPath;
             existing->placement = placement;
-            changed = true;
+            CaptureMonitorSnapshot(*existing, *monitor);
+            changed = changed || anchorChanged;
         }
     }
 
@@ -324,8 +446,7 @@ bool DesktopIconLayoutService::ResolveOnlinePoint(
     POINT& physicalPoint) {
     physicalPoint = {};
     if (!anchor.placement.valid) return false;
-    const auto* monitor = MonitorService::FindMonitorById(
-        topology, anchor.placement.monitorId);
+    const auto* monitor = FindAnchorMonitor(anchor, topology);
     if (!monitor) return false;
     physicalPoint = MonitorService::MaterializePoint96(
         anchor.placement, *monitor);
@@ -360,4 +481,105 @@ int DesktopIconLayoutService::RestoreOnline(
         }
     }
     return restoredCount;
+}
+
+bool DesktopIconLayoutService::BeginTopologyRecovery(
+    const MonitorService::DisplayTopologySnapshot& topology,
+    const std::vector<std::wstring>& excludedPaths) {
+    pendingRestoreTargets_.clear();
+    pendingRestoreCursor_ = 0;
+    pendingRestoreRounds_ = 0;
+
+    const auto excluded = BuildPathSet(excludedPaths);
+    std::vector<std::wstring> offlinePaths;
+    bool anchorIdentityChanged = false;
+    const auto previousAnchors = anchors_;
+
+    for (auto& anchor : anchors_) {
+        if (!anchor.placement.valid ||
+            excluded.find(PathKey(anchor.path)) != excluded.end() ||
+            GetFileAttributesW(anchor.path.c_str()) ==
+                INVALID_FILE_ATTRIBUTES ||
+            !IsDesktopFilesystemPath(anchor.path)) {
+            continue;
+        }
+
+        const auto* monitor = FindAnchorMonitor(anchor, topology);
+        if (!monitor) {
+            // Explorer projects this icon onto a remaining monitor when its
+            // owning display disappears. Park it instead and preserve the
+            // monitor-relative anchor for the reconnect.
+            offlinePaths.push_back(anchor.path);
+            continue;
+        }
+
+        if (_wcsicmp(
+                anchor.placement.monitorId.c_str(),
+                monitor->stableId.c_str()) != 0 ||
+            !SameMonitorSnapshot(anchor, *monitor)) {
+            anchor.placement.monitorId = monitor->stableId;
+            CaptureMonitorSnapshot(anchor, *monitor);
+            anchorIdentityChanged = true;
+        }
+
+        PendingRestoreTarget target;
+        target.path = anchor.path;
+        target.point = MonitorService::MaterializePoint96(
+            anchor.placement, *monitor);
+        pendingRestoreTargets_.push_back(std::move(target));
+    }
+
+    const bool visibilityReady =
+        DesktopShellService::SetOfflineMonitorDesktopPaths(offlinePaths);
+
+    bool saved = true;
+    if (anchorIdentityChanged) {
+        saved = Save();
+        if (!saved) anchors_ = previousAnchors;
+    }
+
+    // Explorer may replace its desktop ListView more than once during a
+    // hot-plug. Retry complete target sets on later timer ticks, never in a
+    // blocking loop on the window thread.
+    pendingRestoreRounds_ = pendingRestoreTargets_.empty() ? 0 : 4;
+    return visibilityReady && saved;
+}
+
+size_t DesktopIconLayoutService::ProcessTopologyRecoveryBatch(
+    size_t maximumItems) {
+    if (maximumItems == 0 || pendingRestoreTargets_.empty()) return 0;
+
+    size_t processed = 0;
+    while (processed < maximumItems &&
+           pendingRestoreCursor_ < pendingRestoreTargets_.size()) {
+        const auto& target = pendingRestoreTargets_[pendingRestoreCursor_++];
+        ++processed;
+        if (GetFileAttributesW(target.path.c_str()) ==
+                INVALID_FILE_ATTRIBUTES ||
+            !IsDesktopFilesystemPath(target.path)) {
+            continue;
+        }
+
+        POINT current{};
+        const bool alreadyPlaced =
+            DesktopShellService::GetPathPositionOnDesktop(
+                target.path, current) &&
+            std::abs(current.x - target.point.x) <= 1 &&
+            std::abs(current.y - target.point.y) <= 1;
+        if (!alreadyPlaced) {
+            DesktopShellService::TryRestorePathToDesktopPosition(
+                target.path, target.point);
+        }
+    }
+
+    if (pendingRestoreCursor_ >= pendingRestoreTargets_.size()) {
+        --pendingRestoreRounds_;
+        if (pendingRestoreRounds_ > 0) {
+            pendingRestoreCursor_ = 0;
+        } else {
+            pendingRestoreTargets_.clear();
+            pendingRestoreCursor_ = 0;
+        }
+    }
+    return pendingRestoreTargets_.size();
 }

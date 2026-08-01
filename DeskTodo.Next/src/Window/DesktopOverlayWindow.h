@@ -119,7 +119,6 @@ private:
     ULONGLONG interactionTopologyGeneration = 0;
     ULONGLONG topologyRefreshSerial = 0;
     ULONGLONG topologyFrameSerial = 0;
-    int desktopIconRestorePassesRemaining = 0;
     DropTarget* dropTarget = nullptr;
     bool dropTargetRegistered = false;
     HWINEVENTHOOK desktopViewEventHook = nullptr;
@@ -203,6 +202,7 @@ private:
     std::wstring SelectFolder();
 
     bool EnsureBackbuffer(int w, int h);
+    void ResetRenderResources();
     void ClearBackbufferRect(const RECT& localRect);
     void AttachToDesktopHost(const RECT& virtualScreen);
     bool PositionForVirtualScreen(const RECT& virtualScreen);

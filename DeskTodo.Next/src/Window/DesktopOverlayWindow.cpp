@@ -574,9 +574,8 @@ void DesktopOverlayWindow::Destroy() {
         screenshotTool->Destroy();
         screenshotTool.reset();
     }
-    desktopIconRestorePassesRemaining = 0;
     desktopIconLayoutService.reset();
-    renderer.DestroyRenderTarget();
+    ResetRenderResources();
     if (memBitmap) { DeleteObject(memBitmap); memBitmap = nullptr; }
     if (memDC) { DeleteDC(memDC); memDC = nullptr; }
     if (hwnd) { DestroyWindow(hwnd); hwnd = nullptr; }
@@ -1415,6 +1414,9 @@ bool DesktopOverlayWindow::EnsureBackbuffer(int w, int h) {
     if (memBitmap && width == w && height == h)
         return true;
 
+    // The D2D DC target is bound to the old DIB/DC. Release all D2D
+    // resources before replacing either GDI object.
+    ResetRenderResources();
     if (memBitmap) { DeleteObject(memBitmap); memBitmap = nullptr; }
     bitmapBits = nullptr;
     if (memDC) { DeleteDC(memDC); memDC = nullptr; }
@@ -1456,6 +1458,14 @@ bool DesktopOverlayWindow::EnsureBackbuffer(int w, int h) {
     height = h;
     ++backbufferGeneration;
     return true;
+}
+
+void DesktopOverlayWindow::ResetRenderResources() {
+    // Snap brushes are created from FenceRenderer's target and must be
+    // released first. Otherwise a reconnect can leave a brush from the old
+    // target cached and make EndDraw fail on every frame with snap lines.
+    snapRenderer.DestroyResources();
+    renderer.DestroyRenderTarget();
 }
 
 void DesktopOverlayWindow::ClearBackbufferRect(
@@ -1678,6 +1688,7 @@ void DesktopOverlayWindow::Render() {
         // dirty region has already been cleared, so publishing this bitmap
         // would make unrelated fences disappear. Keep the old compositor
         // frame and retry with a complete redraw instead.
+        ResetRenderResources();
         invalidateIncompleteFrame();
         InvalidateRect(hwnd, nullptr, FALSE);
         return;
@@ -2884,13 +2895,8 @@ void DesktopOverlayWindow::RestoreDesktopIconsAfterTopology(
     const MonitorService::DisplayTopologySnapshot& topology) {
     if (!desktopIconLayoutService || topology.signature.empty()) return;
 
-    desktopIconLayoutService->RestoreOnline(
+    desktopIconLayoutService->BeginTopologyRecovery(
         topology, CollectLogicalMemberPaths());
-    // Explorer can rebuild its desktop list view after the display broadcast.
-    // Repeat restoration on the next three stable two-second passes, but never
-    // capture during this recovery window.
-    desktopIconRestorePassesRemaining =
-        desktopIconLayoutService->Anchors().empty() ? 0 : 3;
 }
 
 void DesktopOverlayWindow::SyncStableDesktopIconLayout(
@@ -2902,9 +2908,8 @@ void DesktopOverlayWindow::SyncStableDesktopIconLayout(
     }
 
     const auto excludedPaths = CollectLogicalMemberPaths();
-    if (desktopIconRestorePassesRemaining > 0) {
-        desktopIconLayoutService->RestoreOnline(topology, excludedPaths);
-        --desktopIconRestorePassesRemaining;
+    if (desktopIconLayoutService->HasPendingTopologyRecovery()) {
+        desktopIconLayoutService->ProcessTopologyRecoveryBatch(6);
         return;
     }
     desktopIconLayoutService->CaptureStable(topology, excludedPaths);
@@ -2965,8 +2970,18 @@ void DesktopOverlayWindow::RefreshDisplayTopology() {
             const RECT virtualScreen = topology.virtualScreen;
             const int newWidth = virtualScreen.right - virtualScreen.left;
             const int newHeight = virtualScreen.bottom - virtualScreen.top;
-            if (newWidth <= 0 || newHeight <= 0 ||
-                !EnsureBackbuffer(newWidth, newHeight)) {
+            if (newWidth <= 0 || newHeight <= 0) {
+                topologyReady = false;
+                ArmDisplayTopologyRefreshTimer();
+                return;
+            }
+
+            // A power-cycle can recreate the DWM/D2D path without changing
+            // the virtual desktop rectangle. Always start the recovery with
+            // a fresh target, and release it before EnsureBackbuffer can
+            // replace the DIB/DC.
+            ResetRenderResources();
+            if (!EnsureBackbuffer(newWidth, newHeight)) {
                 topologyReady = false;
                 ArmDisplayTopologyRefreshTimer();
                 return;
@@ -2983,10 +2998,6 @@ void DesktopOverlayWindow::RefreshDisplayTopology() {
                 return;
             }
 
-            // Drop any target/bitmap resources that may still reference the
-            // old display path. Render() will create a fresh target and then
-            // publish a complete layered frame before accepting input again.
-            renderer.DestroyRenderTarget();
             forceFullRedraw = true;
             backbufferHasCompleteFrame = false;
             completeFrameGeneration = 0;
@@ -3053,6 +3064,9 @@ void DesktopOverlayWindow::RefreshDisplayTopology() {
     // topology is proven to differ.  This keeps ordinary duplicate broadcasts
     // from blocking input or cancelling a drag.
     displayTopologyDirty = true;
+    // Force a fresh D2D target even when the virtual desktop keeps the same
+    // size: the display path/DWM surface may have been recreated underneath.
+    ResetRenderResources();
     if (!EnsureBackbuffer(newWidth, newHeight)) {
         displayTopologyDirty = false;
         ArmDisplayTopologyRefreshTimer();

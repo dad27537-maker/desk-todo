@@ -24,6 +24,7 @@ using Microsoft::WRL::ComPtr;
 namespace {
 
 std::unordered_set<std::wstring> suppressedDesktopPaths;
+std::unordered_set<std::wstring> offlineMonitorDesktopPaths;
 std::mutex suppressedDesktopPathsMutex;
 
 ComPtr<IFolderFilter> desktopPathFilter;
@@ -45,8 +46,12 @@ bool ContainsSuppressedPathKey(const std::wstring& key) {
     return suppressedDesktopPaths.find(key) != suppressedDesktopPaths.end();
 }
 
-bool ContainsSuppressedPath(const std::wstring& path) {
-    return ContainsSuppressedPathKey(PathKey(path));
+bool ContainsHiddenPath(const std::wstring& path) {
+    const std::wstring key = PathKey(path);
+    std::lock_guard<std::mutex> lock(suppressedDesktopPathsMutex);
+    return suppressedDesktopPaths.find(key) != suppressedDesktopPaths.end() ||
+        offlineMonitorDesktopPaths.find(key) !=
+            offlineMonitorDesktopPaths.end();
 }
 
 void AddSuppressedPathKey(const std::wstring& key) {
@@ -61,17 +66,31 @@ void RemoveSuppressedPathKey(const std::wstring& key) {
 
 bool HasSuppressedPaths() {
     std::lock_guard<std::mutex> lock(suppressedDesktopPathsMutex);
-    return !suppressedDesktopPaths.empty();
+    return !suppressedDesktopPaths.empty() ||
+        !offlineMonitorDesktopPaths.empty();
 }
 
 std::vector<std::wstring> SuppressedPathSnapshot() {
     std::lock_guard<std::mutex> lock(suppressedDesktopPathsMutex);
-    return { suppressedDesktopPaths.begin(), suppressedDesktopPaths.end() };
+    std::unordered_set<std::wstring> paths = suppressedDesktopPaths;
+    paths.insert(
+        offlineMonitorDesktopPaths.begin(),
+        offlineMonitorDesktopPaths.end());
+    return { paths.begin(), paths.end() };
+}
+
+bool ReplaceOfflineMonitorPaths(
+    std::unordered_set<std::wstring> replacement) {
+    std::lock_guard<std::mutex> lock(suppressedDesktopPathsMutex);
+    if (replacement == offlineMonitorDesktopPaths) return false;
+    offlineMonitorDesktopPaths = std::move(replacement);
+    return true;
 }
 
 void ClearSuppressedPaths() {
     std::lock_guard<std::mutex> lock(suppressedDesktopPathsMutex);
     suppressedDesktopPaths.clear();
+    offlineMonitorDesktopPaths.clear();
 }
 
 class DesktopPathFilter final : public IFolderFilter {
@@ -150,7 +169,7 @@ public:
         PWSTR filesystemPath = nullptr;
         result = shellItem->GetDisplayName(SIGDN_FILESYSPATH, &filesystemPath);
         if (FAILED(result) || !filesystemPath) return S_OK;
-        const bool suppressed = ContainsSuppressedPath(filesystemPath);
+        const bool suppressed = ContainsHiddenPath(filesystemPath);
         CoTaskMemFree(filesystemPath);
         return suppressed ? S_FALSE : S_OK;
     }
@@ -838,45 +857,57 @@ bool DesktopShellService::PositionPathOnDesktop(const std::wstring& path, POINT 
 
 bool DesktopShellService::RestorePathToDesktopPosition(
     const std::wstring& path, POINT physicalScreenPoint) {
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        if (TryRestorePathToDesktopPosition(path, physicalScreenPoint)) {
+            return true;
+        }
+        Sleep(25);
+    }
+    return false;
+}
+
+bool DesktopShellService::TryRestorePathToDesktopPosition(
+    const std::wstring& path, POINT physicalScreenPoint) {
     if (path.empty()) return false;
 
     // The saved point came from GetPathPositionOnDesktop. Convert it back to
     // the same desktop-view client coordinate space and submit it unchanged.
     // Do not snap again: the grid origin is not necessarily (0,0), and a second
     // snap breaks coordinates on negative-coordinate secondary monitors.
-    for (int attempt = 0; attempt < 10; ++attempt) {
-        ComPtr<IFolderView> folderView;
-        HWND listView = nullptr;
-        if (TryGetDesktopFolderView(folderView, listView) && folderView && listView) {
-            PITEMID_CHILD child = nullptr;
-            if (TryFindDesktopChild(folderView.Get(), path, &child) && child) {
-                POINT logicalScreen = PhysicalScreenToLogicalPoint(
-                    listView, physicalScreenPoint);
-                POINT requestedClient = logicalScreen;
-                ScreenToClient(listView, &requestedClient);
-
-                PCUITEMID_CHILD items[1]{ child };
-                POINT points[1]{ requestedClient };
-                const bool requested = SUCCEEDED(folderView->SelectAndPositionItems(
-                    1, items, points, SVSI_POSITIONITEM));
-                POINT actualClient{};
-                bool exact = requested &&
-                    SUCCEEDED(folderView->GetItemPosition(child, &actualClient));
-                CoTaskMemFree(child);
-
-                if (exact) {
-                    POINT actualScreen = actualClient;
-                    ClientToScreen(listView, &actualScreen);
-                    LogicalToPhysicalPointForPerMonitorDPI(listView, &actualScreen);
-                    exact = std::abs(actualScreen.x - physicalScreenPoint.x) <= 1 &&
-                            std::abs(actualScreen.y - physicalScreenPoint.y) <= 1;
-                }
-                if (exact) return true;
-            }
-        }
-        Sleep(25);
+    ComPtr<IFolderView> folderView;
+    HWND listView = nullptr;
+    if (!TryGetDesktopFolderView(folderView, listView) ||
+        !folderView || !listView) {
+        return false;
     }
-    return false;
+
+    PITEMID_CHILD child = nullptr;
+    if (!TryFindDesktopChild(folderView.Get(), path, &child) || !child) {
+        return false;
+    }
+
+    POINT logicalScreen = PhysicalScreenToLogicalPoint(
+        listView, physicalScreenPoint);
+    POINT requestedClient = logicalScreen;
+    ScreenToClient(listView, &requestedClient);
+
+    PCUITEMID_CHILD items[1]{ child };
+    POINT points[1]{ requestedClient };
+    const bool requested = SUCCEEDED(folderView->SelectAndPositionItems(
+        1, items, points, SVSI_POSITIONITEM));
+    POINT actualClient{};
+    bool exact = requested &&
+        SUCCEEDED(folderView->GetItemPosition(child, &actualClient));
+    CoTaskMemFree(child);
+
+    if (exact) {
+        POINT actualScreen = actualClient;
+        ClientToScreen(listView, &actualScreen);
+        LogicalToPhysicalPointForPerMonitorDPI(listView, &actualScreen);
+        exact = std::abs(actualScreen.x - physicalScreenPoint.x) <= 1 &&
+                std::abs(actualScreen.y - physicalScreenPoint.y) <= 1;
+    }
+    return exact;
 }
 
 bool DesktopShellService::GetPathPositionOnDesktop(const std::wstring& path,
@@ -1080,6 +1111,61 @@ bool DesktopShellService::IsPathSuppressedOnDesktop(const std::wstring& path) {
     // suppression set is the source of truth; COM view verification is done
     // once per batch by ReconcileSuppressedDesktopPaths().
     return true;
+}
+
+bool DesktopShellService::SetOfflineMonitorDesktopPaths(
+    const std::vector<std::wstring>& paths) {
+    std::unordered_set<std::wstring> replacement;
+    replacement.reserve(paths.size());
+    for (const auto& path : paths) {
+        if (path.empty() ||
+            GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES ||
+            !IsDesktopFilesystemPath(path)) {
+            continue;
+        }
+        replacement.insert(PathKey(path));
+    }
+
+    if (!ReplaceOfflineMonitorPaths(std::move(replacement))) {
+        // The periodic reconciliation pass handles an Explorer view rebuild.
+        return true;
+    }
+
+    struct NativeDesktopUpdateGuard {
+        NativeDesktopUpdateGuard() {
+            DesktopShellService::BeginNativeDesktopUpdate();
+        }
+        ~NativeDesktopUpdateGuard() {
+            DesktopShellService::EndNativeDesktopUpdate();
+        }
+    } updateGuard;
+
+    ComPtr<IFolderView> folderView;
+    HWND listView = nullptr;
+    ComPtr<IFolderFilterSite> filterSite;
+    if (!TryGetDesktopFolderView(
+            folderView, listView, nullptr, &filterSite) ||
+        !folderView || !listView) {
+        // The replacement set is already committed. A later timer pass will
+        // bind the new Explorer desktop view and apply it.
+        return true;
+    }
+
+    if (HasSuppressedPaths()) {
+        EnsureDesktopPathFilter(
+            folderView.Get(), listView, filterSite.Get());
+    } else {
+        UninstallDesktopPathFilter();
+    }
+
+    // Re-enumerate once so paths whose monitor returned become visible again.
+    // The active filter still excludes logical members and paths belonging to
+    // monitors that remain offline.
+    ComPtr<IShellView> shellView;
+    if (SUCCEEDED(folderView.As(&shellView)) && shellView) {
+        shellView->Refresh();
+    }
+    return ReconcileSuppressedDesktopPaths();
 }
 
 bool DesktopShellService::ReconcileSuppressedDesktopPaths() {

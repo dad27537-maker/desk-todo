@@ -46,6 +46,7 @@ private:
     void BeginEditTask(int index, int visibleRow);
     void EndEditTask(bool commit);
     void LayoutControls();
+    void UpdateControlFont();
     void Paint(HDC dc);
     void ClampScroll();
     void ApplySort();
@@ -55,6 +56,8 @@ private:
     std::wstring ReadDueDate() const;
     void SetDueDate(const std::wstring& dueDate);
     void ShowTaskContextMenu(int index, POINT screenPoint);
+    float UiScale() const;
+    int Scale(int value) const;
     int VisibleRowCount() const;
     RECT AddButtonRect() const;
     RECT CloseButtonRect() const;
