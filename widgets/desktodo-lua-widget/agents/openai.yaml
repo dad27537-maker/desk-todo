@@ -1,0 +1,4 @@
+interface:
+  display_name: "DeskTodo Lua 组件"
+  short_description: "编写、调试和打包 DeskTodo Lua 桌面组件"
+  default_prompt: "Use $desktodo-lua-widget to create a DeskTodo Lua widget from my requirements."

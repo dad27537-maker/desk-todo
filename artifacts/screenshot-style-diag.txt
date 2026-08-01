@@ -1,0 +1,73 @@
+StartCapture: begin
+CaptureVirtualScreen: begin
+CaptureVirtualScreen: ok
+StartCapture: window shown
+CaptureMouseDown: x=-456 y=844 ready=0
+CaptureMouseUp: left=-456 top=844 right=-456 bottom=844 ready=0
+CaptureMouseDown: x=-1764 y=349 ready=0
+CaptureMouseUp: left=-1764 top=349 right=-213 bottom=961 ready=1
+CaptureMouseDown: x=-1380 y=992 ready=1
+CaptureToolbarHit: action=7
+CaptureMouseDown: x=-1326 y=997 ready=1
+CaptureToolbarHit: action=8
+CaptureMouseDown: x=-1258 y=999 ready=1
+CaptureToolbarHit: action=9
+CaptureMouseDown: x=180 y=150 ready=1
+CaptureToolbarHit: action=0
+CaptureMouseDown: x=180 y=150 ready=0
+CaptureMouseUp: left=180 top=150 right=180 bottom=150 ready=0
+CaptureMouseDown: x=1031 y=575 ready=0
+CaptureMouseUp: left=1031 top=575 right=1809 bottom=980 ready=1
+CaptureMouseDown: x=1135 y=1060 ready=1
+CaptureMouseDown: x=1162 y=1073 ready=1
+CaptureMouseDown: x=1794 y=1025 ready=1
+CaptureToolbarHit: action=13
+CaptureMouseDown: x=1795 y=1015 ready=1
+CaptureToolbarHit: action=13
+CaptureMouseDown: x=1768 y=1015 ready=1
+CaptureToolbarHit: action=13
+CaptureMouseDown: x=1062 y=1024 ready=1
+CaptureToolbarHit: action=1
+StartCapture: begin
+CaptureVirtualScreen: begin
+CaptureVirtualScreen: ok
+StartCapture: window shown
+CaptureMouseDown: x=512 y=421 ready=0
+CaptureMouseUp: left=512 top=421 right=2165 bottom=945 ready=1
+CaptureMouseDown: x=800 y=983 ready=1
+CaptureToolbarHit: action=5
+StartCapture: begin
+CaptureVirtualScreen: begin
+CaptureVirtualScreen: ok
+StartCapture: window shown
+CaptureMouseDown: x=658 y=647 ready=0
+CaptureMouseUp: left=658 top=647 right=1794 bottom=742 ready=1
+CaptureMouseDown: x=926 y=777 ready=1
+CaptureToolbarHit: action=5
+StartCapture: begin
+CaptureVirtualScreen: begin
+CaptureVirtualScreen: ok
+StartCapture: window shown
+CaptureMouseDown: x=625 y=647 ready=0
+CaptureMouseUp: left=625 top=647 right=1780 bottom=753 ready=1
+CaptureMouseDown: x=1261 y=787 ready=1
+CaptureToolbarHit: action=11
+CaptureMouseDown: x=665 y=659 ready=1
+CaptureToolbarHit: action=0
+CaptureMouseDown: x=771 y=849 ready=1
+CaptureMouseDown: x=766 y=840 ready=1
+CaptureMouseDown: x=808 y=840 ready=1
+CaptureMouseDown: x=875 y=838 ready=1
+CaptureMouseDown: x=915 y=848 ready=1
+CaptureMouseDown: x=949 y=840 ready=1
+CaptureMouseDown: x=910 y=843 ready=1
+CaptureMouseDown: x=769 y=685 ready=1
+CaptureToolbarHit: action=0
+CaptureMouseDown: x=1362 y=787 ready=1
+CaptureToolbarHit: action=13
+StartCapture: begin
+CaptureVirtualScreen: begin
+CaptureVirtualScreen: ok
+StartCapture: window shown
+CaptureMouseDown: x=640 y=636 ready=0
+CaptureMouseUp: left=640 top=636 right=1822 bottom=754 ready=1

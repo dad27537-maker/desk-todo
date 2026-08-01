@@ -1,0 +1,6 @@
+StartCapture: begin
+CaptureVirtualScreen: begin
+CaptureVirtualScreen: ok
+StartCapture: window shown
+CaptureMouseDown: x=-1960 y=200 ready=0
+CaptureMouseUp: left=-1960 top=200 right=-960 bottom=700 ready=1
