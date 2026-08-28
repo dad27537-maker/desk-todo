@@ -305,54 +305,87 @@ static bool TryGetOverlayPointer(HWND, POINT& point) {
     return GetPhysicalCursorPos(&point) == TRUE;
 }
 
+static const wchar_t POPUP_MENU_HOST_CLASS[] =
+    L"DeskTodoNext_PopupMenuHost";
+
+static LRESULT CALLBACK PopupMenuHostWndProc(
+    HWND window, UINT message, WPARAM wp, LPARAM lp) {
+    return DefWindowProcW(window, message, wp, lp);
+}
+
+static HWND CreatePopupMenuHost(HWND owner) {
+    static ATOM registered = 0;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = PopupMenuHostWndProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = POPUP_MENU_HOST_CLASS;
+        registered = RegisterClassExW(&wc);
+        if (!registered && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+            return nullptr;
+        }
+    }
+
+    // This window is intentionally a 1x1 tool window outside the visible
+    // desktop. It is used only as the foreground owner required by the
+    // Win32 popup-menu loop; the full-screen desktop overlay never becomes
+    // the active/foreground window.
+    return CreateWindowExW(
+        WS_EX_TOOLWINDOW,
+        POPUP_MENU_HOST_CLASS, L"",
+        WS_POPUP,
+        -32000, -32000, 1, 1,
+        nullptr, nullptr, GetModuleHandleW(nullptr), owner);
+}
+
 static UINT TrackForegroundPopupMenu(HWND owner, HMENU menu, UINT flags,
                                      POINT point) {
     if (!owner || !menu) return 0;
     const HWND previousForeground = GetForegroundWindow();
-    const LONG_PTR originalStyle = GetWindowLongPtrW(owner, GWL_EXSTYLE);
-    const bool hadNoActivate = (originalStyle & WS_EX_NOACTIVATE) != 0;
-    if (hadNoActivate) {
-        SetWindowLongPtrW(owner, GWL_EXSTYLE,
-                          originalStyle & ~static_cast<LONG_PTR>(WS_EX_NOACTIVATE));
-        SetWindowPos(owner, nullptr, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
-                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    HWND menuOwner = CreatePopupMenuHost(owner);
+    const bool hasMenuHost = menuOwner && IsWindow(menuOwner);
+    if (!hasMenuHost) menuOwner = owner;
+
+    if (hasMenuHost) {
+        SetWindowPos(
+            menuOwner, HWND_TOP, -32000, -32000, 1, 1,
+            SWP_SHOWWINDOW);
+        SetForegroundWindow(menuOwner);
+    } else {
+        // Last-resort fallback for a failed host creation. This path is only
+        // used during unusual shell/resource failures.
+        const HWND foregroundRoot = previousForeground &&
+            previousForeground != owner && IsWindow(previousForeground)
+            ? GetAncestor(previousForeground, GA_ROOT)
+            : owner;
+        if (foregroundRoot && IsWindow(foregroundRoot)) {
+            menuOwner = foregroundRoot;
+            SetForegroundWindow(menuOwner);
+        }
     }
 
-    // A click on a WS_EX_NOACTIVATE overlay does not grant it foreground
-    // ownership. TrackPopupMenu needs a real foreground owner or Windows can
-    // leave the popup visible when the user clicks another window. Briefly
-    // share the foreground input queue so the transition is accepted even
-    // when another application's window is currently active.
-    const DWORD ownerThread = GetWindowThreadProcessId(owner, nullptr);
-    const DWORD foregroundThread = previousForeground
-        ? GetWindowThreadProcessId(previousForeground, nullptr)
-        : 0;
-    const bool attached = foregroundThread && foregroundThread != ownerThread &&
-        AttachThreadInput(ownerThread, foregroundThread, TRUE) == TRUE;
-    SetForegroundWindow(owner);
-    SetActiveWindow(owner);
-    if (attached) AttachThreadInput(ownerThread, foregroundThread, FALSE);
     const UINT selected = TrackPopupMenuEx(
-        menu, flags | TPM_RETURNCMD, point.x, point.y, owner, nullptr);
-    // Required for owned popup menus: without the benign message, a menu
-    // opened by a no-activate layered window can remain in menu mode and eat
-    // later clicks on desktop/fence title controls.
-    PostMessageW(owner, WM_NULL, 0, 0);
+        menu, flags | TPM_RETURNCMD, point.x, point.y, menuOwner, nullptr);
 
-    if (hadNoActivate && IsWindow(owner)) {
-        SetWindowLongPtrW(owner, GWL_EXSTYLE, originalStyle);
-        SetWindowPos(owner, nullptr, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
-                     SWP_NOOWNERZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    // Required for popup menus: without the benign message, Windows can keep
+    // the menu loop attached to the temporary owner after the menu closes.
+    PostMessageW(menuOwner, WM_NULL, 0, 0);
+
+    if (hasMenuHost) {
+        ShowWindow(menuOwner, SW_HIDE);
     }
-    if (previousForeground && previousForeground != owner &&
+    if (previousForeground && previousForeground != menuOwner &&
         IsWindow(previousForeground)) {
+        const DWORD menuThread = GetWindowThreadProcessId(menuOwner, nullptr);
         const DWORD restoreThread = GetWindowThreadProcessId(previousForeground, nullptr);
-        const bool restoreAttached = restoreThread && restoreThread != ownerThread &&
-            AttachThreadInput(ownerThread, restoreThread, TRUE) == TRUE;
+        const bool restoreAttached = restoreThread && restoreThread != menuThread &&
+            AttachThreadInput(menuThread, restoreThread, TRUE) == TRUE;
         SetForegroundWindow(previousForeground);
-        if (restoreAttached) AttachThreadInput(ownerThread, restoreThread, FALSE);
+        if (restoreAttached) AttachThreadInput(menuThread, restoreThread, FALSE);
+    }
+    if (hasMenuHost) {
+        DestroyWindow(menuOwner);
     }
     return selected;
 }
@@ -431,7 +464,7 @@ bool DesktopOverlayWindow::Create(HINSTANCE hInst) {
     topologyReady = backbufferHasCompleteFrame &&
         !forceFullRedraw &&
         completeFrameGeneration == backbufferGeneration;
-    ShowWindow(hwnd, SW_SHOW);
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     DesktopShellService::ReconcileSuppressedDesktopPaths();
     EnsureDesktopViewEventHook();
 
@@ -439,7 +472,7 @@ bool DesktopOverlayWindow::Create(HINSTANCE hInst) {
     RegisterHotKey(hwnd, 1002, MOD_CONTROL | MOD_SHIFT, VK_F5);
     RegisterHotKey(hwnd, 1003, MOD_CONTROL | MOD_SHIFT, 'N');
     RegisterHotKey(hwnd, 1004, MOD_CONTROL | MOD_SHIFT, 'L');
-    RegisterHotKey(hwnd, 1005, MOD_CONTROL | MOD_SHIFT, 'A');
+    RegisterScreenshotHotkey();
     CreateTrayIcon(hInst);
     pomodoroWidget->RestoreIfVisible();
     todoWidget->RestoreIfVisible();
@@ -473,11 +506,35 @@ void DesktopOverlayWindow::AttachToDesktopHost(
     // a child of Progman/SHELLDLL_DefView is tempting, but on current
     // Explorer builds a full-size layered child can cover the native ListView
     // (desktop files disappear) or be composited behind the wallpaper (the
-    // fences disappear). A non-activating top-level window stays above the
-    // desktop surface while transparent hit-testing lets Explorer receive
-    // clicks outside a fence.
-    desktopHostWindow = nullptr;
+    // fences disappear). Instead, keep the overlay immediately above the
+    // native desktop host in Z-order. This leaves ordinary application
+    // windows above the overlay while keeping the fences visible on desktop.
+    desktopHostWindow = DesktopShellService::GetNativeDesktopHostWindow();
     PositionForVirtualScreen(virtualScreen);
+}
+
+bool DesktopOverlayWindow::PlaceInDesktopLayer() {
+    if (!hwnd || !IsWindow(hwnd)) return false;
+
+    if (!desktopHostWindow || !IsWindow(desktopHostWindow) ||
+        desktopHostWindow == hwnd) {
+        desktopHostWindow = DesktopShellService::GetNativeDesktopHostWindow();
+    }
+
+    if (!desktopHostWindow || !IsWindow(desktopHostWindow) ||
+        desktopHostWindow == hwnd) {
+        // Explorer may not have exposed its desktop host during startup.
+        // Keep the current position until the shell becomes available rather
+        // than promoting the overlay above all normal application windows.
+        return false;
+    }
+
+    // Put the overlay immediately above Explorer's desktop host in the
+    // Z-order, leaving ordinary application windows above the overlay.
+    return SetWindowPos(
+        hwnd, desktopHostWindow, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+        SWP_NOOWNERZORDER) != FALSE;
 }
 
 bool DesktopOverlayWindow::PositionForVirtualScreen(
@@ -498,6 +555,7 @@ bool DesktopOverlayWindow::PositionForVirtualScreen(
         current.left == origin.x && current.top == origin.y &&
         current.right - current.left == targetWidth &&
         current.bottom - current.top == targetHeight) {
+        PlaceInDesktopLayer();
         return true;
     }
 
@@ -508,12 +566,14 @@ bool DesktopOverlayWindow::PositionForVirtualScreen(
     completeFrameGeneration = 0;
     previousInteractiveDirtyValid = false;
 
-    return SetWindowPos(
+    const bool positioned = SetWindowPos(
         hwnd,
-        HWND_TOP,
+        nullptr,
         origin.x, origin.y, targetWidth, targetHeight,
-        SWP_NOACTIVATE | SWP_NOOWNERZORDER |
+        SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER |
         SWP_SHOWWINDOW) != FALSE;
+    PlaceInDesktopLayer();
+    return positioned;
 }
 
 void DesktopOverlayWindow::Destroy() {
@@ -551,7 +611,7 @@ void DesktopOverlayWindow::Destroy() {
         UnregisterHotKey(hwnd, 1002);
         UnregisterHotKey(hwnd, 1003);
         UnregisterHotKey(hwnd, 1004);
-        UnregisterHotKey(hwnd, 1005);
+        UnregisterScreenshotHotkey();
     }
     if (tooltipService) tooltipService->Destroy();
     if (pomodoroWidget) {
@@ -671,14 +731,7 @@ void DesktopOverlayWindow::ExecuteCommand(const std::wstring& command) {
         fenceManager->SetAllVisible(true);
         DesktopShellService::ReconcileSuppressedDesktopPaths();
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        if (desktopHostWindow &&
-            IsWindow(desktopHostWindow)) {
-            SetWindowPos(
-                hwnd, HWND_TOP, 0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE |
-                SWP_NOACTIVATE |
-                SWP_NOOWNERZORDER);
-        }
+        PlaceInDesktopLayer();
         RequestRedraw();
         nid.uFlags = NIF_INFO;
         wcscpy_s(
@@ -913,6 +966,7 @@ void DesktopOverlayWindow::ShowFenceMenu(const std::wstring& fenceId, POINT pt) 
     const UINT selected = TrackForegroundPopupMenu(
         hwnd, menu, TPM_RIGHTBUTTON, pt);
     DestroyMenu(menu);
+    PlaceInDesktopLayer();
     // A display event can arrive while TrackPopupMenu runs its nested message
     // loop. Do not execute a stale placement-changing command after that event.
     if (displayTopologyDirty) return;
@@ -1008,6 +1062,26 @@ void DesktopOverlayWindow::StartScreenshotCaptureSoon() {
     SetCursor(LoadCursorW(nullptr, IDC_ARROW));
     KillTimer(hwnd, CAPTURE_START_TIMER_ID);
     SetTimer(hwnd, CAPTURE_START_TIMER_ID, 80, nullptr);
+}
+
+bool DesktopOverlayWindow::RegisterScreenshotHotkey() {
+    if (!hwnd) return false;
+    const ScreenshotHotkeyConfig config = LoadScreenshotHotkeyConfig();
+    screenshotHotkeyModifiers = ScreenshotHotkeyModifiers(config);
+    screenshotHotkeyVirtualKey = config.virtualKey;
+    screenshotHotkeyRegistered = screenshotHotkeyVirtualKey != 0 &&
+        RegisterHotKey(hwnd, 1005, screenshotHotkeyModifiers, screenshotHotkeyVirtualKey) == TRUE;
+    return screenshotHotkeyRegistered;
+}
+
+void DesktopOverlayWindow::UnregisterScreenshotHotkey() {
+    if (hwnd && screenshotHotkeyRegistered) UnregisterHotKey(hwnd, 1005);
+    screenshotHotkeyRegistered = false;
+}
+
+bool DesktopOverlayWindow::ReloadScreenshotHotkey() {
+    UnregisterScreenshotHotkey();
+    return RegisterScreenshotHotkey();
 }
 
 bool DesktopOverlayWindow::ReleaseAllManagedFilesToDesktop() {
@@ -1796,7 +1870,6 @@ void DesktopOverlayWindow::ShowTrayMenu() {
     AppendMenuW(menu, MF_STRING, 3003, L"\u4e00\u952e\u6574\u7406\u684c\u9762");
     AppendMenuW(menu, MF_STRING, 3004, fenceManager->IsAllVisible() ? L"\u9690\u85cf\u6240\u6709\u683c\u5b50" : L"\u663e\u793a\u6240\u6709\u683c\u5b50");
     AppendMenuW(menu, MF_STRING, 3005, L"\u9501\u5b9a/\u89e3\u9501\u5168\u90e8\u683c\u5b50");
-    AppendMenuW(menu, MF_STRING, 3006, L"\u8bbe\u7f6e");
     AppendMenuW(menu, MF_STRING, 3010, L"\u622a\u56fe");
     AppendMenuW(menu, MF_STRING, 3012, L"\u6587\u4ef6\u4f20\u9001");
     AppendMenuW(menu, MF_STRING, 3008, L"\u5907\u4efd\u684c\u9762\u5e03\u5c40");
@@ -1806,6 +1879,8 @@ void DesktopOverlayWindow::ShowTrayMenu() {
     AppendMenuW(menu, MF_STRING, 3011,
         bhRunning ? L"\u5173\u95ed\u9ed1\u6d1e\u52a8\u6001\u80cc\u666f" : L"\u5f00\u542f\u9ed1\u6d1e\u52a8\u6001\u80cc\u666f");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, 3006, L"\u8bbe\u7f6e");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, 3007, L"\u9000\u51fa DeskTodo");
 
     POINT pt;
@@ -1813,6 +1888,7 @@ void DesktopOverlayWindow::ShowTrayMenu() {
 
     const UINT selected = TrackForegroundPopupMenu(
         hwnd, menu, TPM_RIGHTALIGN | TPM_BOTTOMALIGN | TPM_RIGHTBUTTON, pt);
+    PlaceInDesktopLayer();
     if (selected != 0 && !displayTopologyDirty) {
         PostMessageW(hwnd, WM_COMMAND, selected, 0);
     }
@@ -3137,6 +3213,11 @@ LRESULT DesktopOverlayWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_ERASEBKGND:
         return 1;
 
+    case WM_MOUSEACTIVATE:
+        // A desktop overlay must never become the foreground application just
+        // because a fence or one of its items was clicked.
+        return MA_NOACTIVATE;
+
     case WM_NCHITTEST: {
         POINT pt{};
         if (!TryGetOverlayPointer(hwnd, pt)) return HTTRANSPARENT;
@@ -3290,6 +3371,7 @@ LRESULT DesktopOverlayWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             if (fence && itemIdx < (int)fence->items.size()) {
                 FileService::ShellOpenFile(fence->items[itemIdx].fullPath);
             }
+            PlaceInDesktopLayer();
             return 0;
         }
 
@@ -3521,6 +3603,7 @@ LRESULT DesktopOverlayWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_DESKTODO_DESKTOP_VIEW_EVENT:
+        PlaceInDesktopLayer();
         if (interactionState ==
                 FenceInteractionState::None &&
             !displayTopologyDirty) {
@@ -3581,6 +3664,7 @@ LRESULT DesktopOverlayWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         } else if (wp == LOGICAL_ICON_SYNC_TIMER_ID) {
             // Shell enumeration and icon snapshots can block briefly. Never
             // run them in the middle of a pointer-driven move/resize/drag.
+            PlaceInDesktopLayer();
             if (interactionState == FenceInteractionState::None &&
                 !displayTopologyDirty) {
                 EnsureDesktopViewEventHook();
@@ -3734,7 +3818,10 @@ LRESULT DesktopOverlayWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         return TRUE;
 
     case WM_TRAY_ICON:
-        if (lp == WM_RBUTTONUP || lp == WM_LBUTTONUP) ShowTrayMenu();
+        if (lp == WM_RBUTTONUP || lp == WM_LBUTTONUP ||
+            lp == WM_CONTEXTMENU || lp == WM_LBUTTONDBLCLK) {
+            ShowTrayMenu();
+        }
         return 0;
 
     case WM_DESKTODO_SHOW_POMODORO:
@@ -3764,6 +3851,9 @@ LRESULT DesktopOverlayWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DESKTODO_START_CAPTURE:
         StartScreenshotCaptureSoon();
         return 0;
+
+    case WM_DESKTODO_RELOAD_SCREENSHOT_HOTKEY:
+        return ReloadScreenshotHotkey() ? 1 : 0;
 
     case WM_DESKTODO_SHOW_LAN_TRANSFER:
         if (lanTransferWidget) lanTransferWidget->ShowOrCreate();

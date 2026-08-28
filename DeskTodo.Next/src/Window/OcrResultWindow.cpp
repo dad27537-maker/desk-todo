@@ -86,6 +86,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
                    102, 34, TRUE);
         return 0;
     }
+    case WM_GETMINMAXINFO: {
+        auto* info = reinterpret_cast<MINMAXINFO*>(lp);
+        info->ptMinTrackSize = { 520, 300 };
+        return 0;
+    }
     case WM_COMMAND:
         if (LOWORD(wp) == CopyId) {
             if (CopyEditText(window))

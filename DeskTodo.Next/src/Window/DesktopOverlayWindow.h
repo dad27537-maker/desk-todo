@@ -97,6 +97,9 @@ private:
     std::unique_ptr<LanTransferWindow> lanTransferWidget;
     std::unique_ptr<BlackHoleBackground> blackHoleBackground;
     std::unique_ptr<ScreenshotTool> screenshotTool;
+    UINT screenshotHotkeyModifiers = 0;
+    UINT screenshotHotkeyVirtualKey = 0;
+    bool screenshotHotkeyRegistered = false;
     bool exitInProgress = false;
     std::wstring displayTopologySignature;
     MonitorService::DisplayTopologySnapshot displayTopologySnapshot;
@@ -205,6 +208,7 @@ private:
     void ResetRenderResources();
     void ClearBackbufferRect(const RECT& localRect);
     void AttachToDesktopHost(const RECT& virtualScreen);
+    bool PlaceInDesktopLayer();
     bool PositionForVirtualScreen(const RECT& virtualScreen);
     void Render();
     void UpdateMovingFence(POINT pt);
@@ -263,6 +267,9 @@ private:
     // 设置窗口
     void ShowSettingsDialog();
     void StartScreenshotCaptureSoon();
+    bool RegisterScreenshotHotkey();
+    void UnregisterScreenshotHotkey();
+    bool ReloadScreenshotHotkey();
 
     // 黑洞背景层
     void ToggleBlackHoleBackground();

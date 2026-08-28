@@ -1,10 +1,20 @@
 #pragma once
 
 #include <Windows.h>
+#include <commctrl.h>
 #include <string>
 #include <vector>
 
 #include "Models/CaptureToolbar.h"
+
+struct ScreenshotHotkeyConfig {
+    UINT virtualKey = 'A';
+    BYTE flags = HOTKEYF_CONTROL | HOTKEYF_SHIFT;
+};
+
+ScreenshotHotkeyConfig LoadScreenshotHotkeyConfig();
+bool SaveScreenshotHotkeyConfig(const ScreenshotHotkeyConfig& config);
+UINT ScreenshotHotkeyModifiers(const ScreenshotHotkeyConfig& config);
 
 class ScreenshotTool {
 public:
@@ -37,6 +47,8 @@ private:
     RECT virtualScreen_{};
     RECT selection_{};
     POINT selectionStart_{};
+    POINT cursorPosition_{};
+    bool cursorPositionValid_ = false;
     bool selecting_ = false;
     bool selectionReady_ = false;
     bool pinDragging_ = false;
@@ -79,6 +91,7 @@ private:
     void PaintCaptureToolbar(HDC dc);
     void PaintCaptureProperties(HDC dc);
     void PaintCaptureHint(HDC dc);
+    void PaintMagnifier(HDC dc);
     void PaintAnnotations(HDC dc, POINT origin = {});
     void PaintPin(HDC dc);
     HBITMAP CreateSelectionBitmap();

@@ -5,6 +5,7 @@
 #include "Window/AppWindowMessages.h"
 #include "Window/BlackHoleSettingsWindow.h"
 #include "Window/SettingsWindowLayout.h"
+#include "Window/ScreenshotTool.h"
 
 #include <commctrl.h>
 #include <shellapi.h>
@@ -26,24 +27,27 @@ constexpr int ClockFenceId = 4112;
 constexpr int ScreenshotId = 4109;
 constexpr int BlackHoleId = 4110;
 constexpr int LanTransferId = 4111;
+constexpr int ScreenshotHotkeyId = 4113;
+constexpr int ScreenshotHotkeyResetId = 4114;
 constexpr int NavBaseId = 4200;
 constexpr int PageCount = 7;
 
-// DeskTodo "Mint & Peach" theme: warm, playful and calm enough for daily use.
-constexpr COLORREF WindowColor = RGB(247, 252, 250);
-constexpr COLORREF SidebarColor = RGB(235, 249, 245);
-constexpr COLORREF SidebarAccentColor = RGB(244, 166, 151);
-constexpr COLORREF ContentColor = RGB(250, 253, 252);
+// iOS-inspired settings palette: grouped background, white surfaces and
+// system blue actions.  Keeping these in one place makes the native controls
+// and the custom-painted surfaces feel like one design system.
+constexpr COLORREF WindowColor = RGB(242, 242, 247);       // systemGroupedBackground
+constexpr COLORREF SidebarColor = RGB(242, 242, 247);
+constexpr COLORREF ContentColor = RGB(242, 242, 247);
 constexpr COLORREF CardColor = RGB(255, 255, 255);
-constexpr COLORREF SelectedColor = RGB(211, 241, 232);
-constexpr COLORREF ButtonColor = RGB(225, 246, 239);
-constexpr COLORREF AccentColor = RGB(13, 148, 136);
-constexpr COLORREF AccentSoftColor = RGB(20, 184, 166);
-constexpr COLORREF TextColor = RGB(19, 78, 74);
-constexpr COLORREF MutedTextColor = RGB(75, 112, 108);
-constexpr COLORREF DividerColor = RGB(211, 232, 226);
-constexpr COLORREF OutlineColor = RGB(199, 226, 218);
-constexpr COLORREF HoverColor = RGB(216, 243, 235);
+constexpr COLORREF SelectedColor = RGB(224, 236, 255);
+constexpr COLORREF ButtonColor = RGB(0, 122, 255);
+constexpr COLORREF AccentColor = RGB(0, 122, 255);
+constexpr COLORREF AccentSoftColor = RGB(0, 105, 225);
+constexpr COLORREF TextColor = RGB(28, 28, 30);
+constexpr COLORREF MutedTextColor = RGB(99, 99, 102);
+constexpr COLORREF DividerColor = RGB(209, 209, 214);
+constexpr COLORREF OutlineColor = RGB(229, 229, 234);
+constexpr COLORREF HoverColor = RGB(232, 241, 255);
 
 HWND activeSettingsWindow = nullptr;
 
@@ -51,6 +55,7 @@ struct Context {
     FenceManager* manager = nullptr;
     HWND owner = nullptr;
     HWND searchEdit = nullptr;
+    HWND screenshotHotkeyEdit = nullptr;
     HWND navButtons[PageCount]{};
     std::vector<HWND> pageControls[PageCount];
     int activePage = 0;
@@ -64,6 +69,7 @@ struct Context {
     HMONITOR monitor = nullptr;
     int scrollOffset = 0;
     int scrollMax = 0;
+    bool updatingScreenshotHotkey = false;
 };
 
 RECT InflateRectCopy(RECT rect, int dx, int dy) {
@@ -88,14 +94,14 @@ void RecreateFonts(Context* context) {
     if (!context) return;
     if (context->bodyFont) DeleteObject(context->bodyFont);
     if (context->headingFont) DeleteObject(context->headingFont);
-    context->bodyFont = CreateFontW(-SettingsWindowLayout::Scale(17, context->layoutScale),
+    context->bodyFont = CreateFontW(-SettingsWindowLayout::Scale(15, context->layoutScale),
         0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-        DEFAULT_PITCH, L"Microsoft YaHei UI");
-    context->headingFont = CreateFontW(-SettingsWindowLayout::Scale(20, context->layoutScale),
+        DEFAULT_PITCH, L"Segoe UI Variable Text");
+    context->headingFont = CreateFontW(-SettingsWindowLayout::Scale(22, context->layoutScale),
         0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-        DEFAULT_PITCH, L"Microsoft YaHei UI");
+        DEFAULT_PITCH, L"Segoe UI Variable Display");
 }
 
 void LayoutControls(Context* context) {
@@ -183,6 +189,44 @@ bool SetStartup(bool enabled) {
     }
     RegCloseKey(key);
     return result == ERROR_SUCCESS;
+}
+
+ScreenshotHotkeyConfig ReadScreenshotHotkeyControl(HWND control) {
+    ScreenshotHotkeyConfig config;
+    if (!control) return config;
+    const WORD packed = static_cast<WORD>(SendMessageW(control, HKM_GETHOTKEY, 0, 0));
+    config.virtualKey = LOBYTE(packed);
+    config.flags = HIBYTE(packed);
+    return config;
+}
+
+void SetScreenshotHotkeyControl(HWND control, const ScreenshotHotkeyConfig& config) {
+    if (!control) return;
+    const WORD packed = MAKEWORD(config.virtualKey, config.flags);
+    SendMessageW(control, HKM_SETHOTKEY, packed, 0);
+}
+
+bool ApplyScreenshotHotkey(Context* context, HWND control,
+                           const ScreenshotHotkeyConfig& requested) {
+    const ScreenshotHotkeyConfig previous = LoadScreenshotHotkeyConfig();
+    if (!context || !context->owner || !SaveScreenshotHotkeyConfig(requested)) {
+        MessageBoxW(control, L"无法保存截图快捷键设置。", L"DeskTodo",
+                    MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    if (SendMessageW(context->owner, WM_DESKTODO_RELOAD_SCREENSHOT_HOTKEY, 0, 0) != 0) {
+        return true;
+    }
+
+    SaveScreenshotHotkeyConfig(previous);
+    SendMessageW(context->owner, WM_DESKTODO_RELOAD_SCREENSHOT_HOTKEY, 0, 0);
+    context->updatingScreenshotHotkey = true;
+    SetScreenshotHotkeyControl(control, previous);
+    context->updatingScreenshotHotkey = false;
+    MessageBoxW(control, L"该快捷键已被其他程序占用，请换一个组合键。", L"DeskTodo",
+                MB_OK | MB_ICONWARNING);
+    return false;
 }
 
 std::wstring FindEverything() {
@@ -334,12 +378,14 @@ void DrawOwnerButton(const DRAWITEMSTRUCT* draw, const Context* context) {
     const bool isNav = id >= NavBaseId && id < NavBaseId + PageCount;
     const bool selected = isNav && context && id - NavBaseId == context->activePage;
     const bool hovered = (draw->itemState & ODS_HOTLIGHT) != 0;
-    COLORREF background = selected ? SelectedColor : (isNav ? SidebarColor : ButtonColor);
-    if (hovered) background = selected ? SelectedColor : HoverColor;
-    if (draw->itemState & ODS_SELECTED) background = AccentSoftColor;
+    const bool pressed = (draw->itemState & ODS_SELECTED) != 0;
+    COLORREF background = isNav ? (selected ? SelectedColor : SidebarColor) : ButtonColor;
+    if (hovered && !isNav) background = RGB(0, 112, 235);
+    if (hovered && isNav && !selected) background = HoverColor;
+    if (pressed && !isNav) background = AccentSoftColor;
 
     HBRUSH brush = CreateSolidBrush(background);
-    const int radius = isNav ? 16 : 18;
+    const int radius = isNav ? 11 : 12;
     HGDIOBJ oldBrush = SelectObject(draw->hDC, brush);
     HPEN noPen = CreatePen(PS_NULL, 0, background);
     HGDIOBJ oldPen = SelectObject(draw->hDC, noPen);
@@ -350,28 +396,14 @@ void DrawOwnerButton(const DRAWITEMSTRUCT* draw, const Context* context) {
     DeleteObject(noPen);
     DeleteObject(brush);
 
-    HBRUSH outline = CreateSolidBrush(selected ? AccentColor : OutlineColor);
-    RECT border = draw->rcItem;
-    HRGN borderRegion = CreateRoundRectRgn(border.left, border.top, border.right,
-        border.bottom, radius, radius);
-    FrameRgn(draw->hDC, borderRegion, outline, 1, 1);
-    DeleteObject(borderRegion);
-    DeleteObject(outline);
-
-    if (selected) {
-        RECT accent{ draw->rcItem.left, draw->rcItem.top, draw->rcItem.left + 4, draw->rcItem.bottom };
-        HBRUSH accentBrush = CreateSolidBrush(AccentColor);
-        FillRect(draw->hDC, &accent, accentBrush);
-        DeleteObject(accentBrush);
-    }
-
     wchar_t text[128]{};
     GetWindowTextW(draw->hwndItem, text, static_cast<int>(std::size(text)));
     SetBkMode(draw->hDC, TRANSPARENT);
-    SetTextColor(draw->hDC, selected || !isNav ? TextColor : MutedTextColor);
+    SetTextColor(draw->hDC, !isNav ? RGB(255, 255, 255) :
+        (selected ? AccentColor : TextColor));
     HFONT oldFont = static_cast<HFONT>(SelectObject(draw->hDC, context->bodyFont));
     RECT textRect = draw->rcItem;
-    textRect.left += isNav ? 26 : 0;
+    textRect.left += isNav ? 18 : 0;
     DrawTextW(draw->hDC, text, -1, &textRect,
         (isNav ? DT_LEFT : DT_CENTER) | DT_VCENTER | DT_SINGLELINE);
     SelectObject(draw->hDC, oldFont);
@@ -388,10 +420,6 @@ void DrawCard(HDC dc, const RECT& rect, int radius) {
     DeleteObject(fill);
     DeleteObject(border);
 
-    RECT accent{ rect.left, rect.top + radius / 2, rect.left + 3, rect.bottom - radius / 2 };
-    HBRUSH accentBrush = CreateSolidBrush(AccentColor);
-    FillRect(dc, &accent, accentBrush);
-    DeleteObject(accentBrush);
 }
 
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
@@ -406,6 +434,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         context->contentBrush = CreateSolidBrush(ContentColor);
         context->editBrush = CreateSolidBrush(RGB(244, 251, 248));
         RecreateFonts(context);
+        INITCOMMONCONTROLSEX commonControls{ sizeof(commonControls), ICC_HOTKEY_CLASS };
+        InitCommonControlsEx(&commonControls);
 
         const wchar_t* navLabels[PageCount] = {
             L"基础设置", L"桌面整理", L"桌面搜索", L"组件",
@@ -431,8 +461,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         SendMessageW(startup, BM_SETCHECK, StartupEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
         AddControl(context, 1, L"STATIC", L"桌面整理", 0,
             208, 32, 470, 30, window);
-        AddControl(context, 1, L"STATIC", L"保存当前格子位置、尺寸与文件排序", 0,
-            208, 72, 470, 24, window);
+        AddControl(context, 1, L"STATIC", L"保存当前布局、尺寸与文件排序", 0,
+            208, 72, 470, 28, window);
         AddControl(context, 1, L"BUTTON", L"备份当前布局",
             BS_OWNERDRAW | WS_TABSTOP, 226, 118, 160, 42, window, BackupId);
         AddControl(context, 1, L"BUTTON", L"还原最近布局",
@@ -440,8 +470,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
 
         AddControl(context, 2, L"STATIC", L"桌面搜索", 0,
             208, 32, 470, 30, window);
-        AddControl(context, 2, L"STATIC", L"\u4f18\u5148\u4f7f\u7528 Everything\uff0c\u672a\u5b89\u88c5\u65f6\u81ea\u52a8\u4f7f\u7528 Windows \u641c\u7d22", 0,
-            208, 72, 470, 24, window);
+        AddControl(context, 2, L"STATIC", L"优先使用 Everything，未安装时使用 Windows 搜索", 0,
+            208, 72, 470, 28, window);
         context->searchEdit = AddControl(context, 2, L"EDIT", L"",
             WS_TABSTOP | ES_AUTOHSCROLL, 226, 118, 350, 38, window,
             SearchEditId, WS_EX_CLIENTEDGE);
@@ -452,45 +482,58 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
 
         AddControl(context, 3, L"STATIC", L"组件", 0,
             208, 32, 470, 30, window);
-        AddControl(context, 3, L"STATIC", L"\u628a\u5e38\u7528\u5de5\u5177\u76f4\u63a5\u6dfb\u52a0\u5230\u684c\u9762\uff0c\u91cd\u590d\u6dfb\u52a0\u4e0d\u4f1a\u521b\u5efa\u526f\u672c", 0,
-            208, 72, 470, 24, window);
+        AddControl(context, 3, L"STATIC", L"把常用工具添加到桌面，重复添加不会创建副本", 0,
+            208, 72, 470, 28, window);
         AddControl(context, 3, L"STATIC", L"番茄时钟", 0,
             226, 108, 180, 28, window);
-        AddControl(context, 3, L"STATIC", L"25 分钟专注 / 5 分钟休息，支持暂停、重置与重启恢复", 0,
-            226, 136, 310, 26, window);
+        AddControl(context, 3, L"STATIC", L"25 分钟专注 / 5 分钟休息，支持暂停与重置", 0,
+            226, 136, 310, 30, window);
         AddControl(context, 3, L"BUTTON", L"添加 / 显示",
             BS_OWNERDRAW | WS_TABSTOP, 540, 112, 150, 38, window, PomodoroId);
         AddControl(context, 3, L"STATIC", L"Todo List", 0,
-            226, 194, 180, 28, window);
-        AddControl(context, 3, L"STATIC", L"支持优先级、截止日期、过期提示与排序，自动保存", 0,
-            226, 222, 310, 26, window);
+            226, 220, 180, 28, window);
+        AddControl(context, 3, L"STATIC", L"支持优先级、截止日期与排序", 0,
+            226, 248, 310, 30, window);
         AddControl(context, 3, L"BUTTON", L"添加 / 显示",
-            BS_OWNERDRAW | WS_TABSTOP, 540, 198, 150, 38, window, TodoId);
+            BS_OWNERDRAW | WS_TABSTOP, 540, 224, 150, 38, window, TodoId);
         AddControl(context, 3, L"STATIC", L"\u65f6\u95f4\u7ec4\u4ef6", 0,
-            226, 280, 220, 28, window);
+            226, 332, 220, 28, window);
         AddControl(context, 3, L"STATIC",
-            L"\u663e\u793a\u5f53\u524d\u65f6\u95f4\u3001\u79d2\u6570\u548c\u65e5\u671f\uff0c\u53ef\u79fb\u52a8\u548c\u7f29\u653e", 0,
-            226, 308, 310, 26, window);
+            L"显示当前时间、秒数和日期，可移动缩放", 0,
+            226, 360, 310, 30, window);
         AddControl(context, 3, L"BUTTON", L"\u6dfb\u52a0 / \u663e\u793a",
-            BS_OWNERDRAW | WS_TABSTOP, 540, 284, 150, 38, window, ClockFenceId);
+            BS_OWNERDRAW | WS_TABSTOP, 540, 336, 150, 38, window, ClockFenceId);
         AddControl(context, 3, L"STATIC", L"\u9ed1\u6d1e\u52a8\u6001\u80cc\u666f", 0,
-            226, 366, 220, 28, window);
-        AddControl(context, 3, L"STATIC", L"\u5f15\u529b\u900f\u955c\u3001\u5438\u79ef\u76d8\u4e0e HDR Bloom \u5168\u5c4f\u684c\u9762\u80cc\u666f\uff0c\u70b9\u51fb\u5f00\u542f\u6216\u5173\u95ed", 0,
-            226, 394, 310, 26, window);
+            226, 444, 220, 28, window);
+        AddControl(context, 3, L"STATIC", L"引力透镜、吸积盘与 HDR Bloom 背景", 0,
+            226, 472, 310, 30, window);
         AddControl(context, 3, L"BUTTON", L"\u5f00\u542f / \u5173\u95ed",
-            BS_OWNERDRAW | WS_TABSTOP, 540, 370, 150, 38, window, BlackHoleId);
+            BS_OWNERDRAW | WS_TABSTOP, 540, 448, 150, 38, window, BlackHoleId);
 
         AddControl(context, 4, L"STATIC", L"\u622a\u56fe\u4e0e\u8d34\u56fe", 0,
             208, 32, 470, 30, window);
-        AddControl(context, 4, L"STATIC", L"\u6846\u9009\u540e\u53ef\u590d\u5236\u3001\u4fdd\u5b58 PNG\u3001\u8d34\u56fe\u5230\u684c\u9762\uff0c\u4e5f\u53ef\u4f7f\u7528 Ctrl+Shift+A", 0,
-            208, 78, 470, 48, window);
+        AddControl(context, 4, L"STATIC", L"框选后可复制、保存 PNG、贴图到桌面，支持 Ctrl+Shift+A", 0,
+            208, 78, 470, 36, window);
+        AddControl(context, 4, L"STATIC", L"\u622a\u56fe\u5feb\u6377\u952e", 0,
+            226, 150, 180, 32, window);
+        context->screenshotHotkeyEdit = AddControl(context, 4, HOTKEY_CLASSW, L"",
+            WS_TABSTOP, 456, 146, 234, 38, window, ScreenshotHotkeyId,
+            WS_EX_CLIENTEDGE);
+        context->updatingScreenshotHotkey = true;
+        SetScreenshotHotkeyControl(context->screenshotHotkeyEdit,
+                                   LoadScreenshotHotkeyConfig());
+        context->updatingScreenshotHotkey = false;
+        AddControl(context, 4, L"STATIC", L"\u6309\u4e0b\u7ec4\u5408\u952e\u540e\u7acb\u5373\u751f\u6548", 0,
+            226, 190, 360, 28, window);
         AddControl(context, 4, L"BUTTON", L"\u5f00\u59cb\u622a\u56fe",
-            BS_OWNERDRAW | WS_TABSTOP, 226, 150, 160, 42, window, ScreenshotId);
+            BS_OWNERDRAW | WS_TABSTOP, 226, 232, 160, 42, window, ScreenshotId);
+        AddControl(context, 4, L"BUTTON", L"\u6062\u590d\u9ed8\u8ba4",
+            BS_OWNERDRAW | WS_TABSTOP, 402, 232, 160, 42, window, ScreenshotHotkeyResetId);
 
         AddControl(context, 5, L"STATIC", L"\u5c40\u57df\u7f51\u5feb\u4f20", 0,
             208, 32, 470, 30, window);
-        AddControl(context, 5, L"STATIC", L"\u786e\u4fdd\u624b\u673a\u4e0e\u7535\u8111\u8fde\u63a5\u540c\u4e00 Wi-Fi\uff0c\u6253\u5f00\u540e\u6309\u9875\u9762\u63d0\u793a\u4f20\u8f93\u6587\u4ef6\u3002", 0,
-            208, 78, 470, 48, window);
+        AddControl(context, 5, L"STATIC", L"手机与电脑连接同一 Wi-Fi，打开后按提示传输文件", 0,
+            208, 78, 470, 36, window);
         AddControl(context, 5, L"BUTTON", L"\u6253\u5f00\u5feb\u4f20",
             BS_OWNERDRAW | WS_TABSTOP, 226, 150, 160, 42, window, LanTransferId);
 
@@ -498,8 +541,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
             208, 32, 470, 30, window);
         AddControl(context, 6, L"STATIC", L"DeskTodo.Next 1.7", 0,
             226, 88, 420, 28, window);
-        AddControl(context, 6, L"STATIC", L"\u539f\u751f Windows \u684c\u9762\u6574\u7406\u3001\u6587\u4ef6\u5939\u6620\u5c04\u3001\u5e03\u5c40\u7ba1\u7406\u4e0e\u684c\u9762\u7ec4\u4ef6\u3002", 0,
-            226, 126, 450, 28, window);
+        AddControl(context, 6, L"STATIC", L"原生 Windows 桌面整理、文件夹映射与桌面组件。", 0,
+            226, 126, 450, 32, window);
         AddControl(context, 6, L"BUTTON", L"查看版本信息",
             BS_OWNERDRAW | WS_TABSTOP, 226, 178, 160, 42, window, AboutId);
 
@@ -528,14 +571,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         DeleteObject(contentPanel);
 
         RECT headerStrip{ 0, 0, sidebarWidth, SettingsWindowLayout::Scale(64, scale) };
-        HBRUSH headerBrush = CreateSolidBrush(RGB(225, 246, 239));
+        HBRUSH headerBrush = CreateSolidBrush(CardColor);
         FillRect(dc, &headerStrip, headerBrush);
         DeleteObject(headerBrush);
-
-        RECT highlight{ 0, SettingsWindowLayout::Scale(64, scale), sidebarWidth, SettingsWindowLayout::Scale(68, scale) };
-        HBRUSH highlightBrush = CreateSolidBrush(SidebarAccentColor);
-        FillRect(dc, &highlight, highlightBrush);
-        DeleteObject(highlightBrush);
 
         if (context) {
             RECT brandArea{ SettingsWindowLayout::Scale(18, scale), SettingsWindowLayout::Scale(16, scale),
@@ -558,7 +596,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
             const int gap = SettingsWindowLayout::Scale(16, scale);
 
             const int scroll = context->scrollOffset;
-            const int radius = SettingsWindowLayout::Scale(14, scale);
+            const int radius = SettingsWindowLayout::Scale(12, scale);
             auto card = [&](int x, int y, int w, int h) {
                 RECT r{ x, y - scroll, x + w, y + h - scroll };
                 if (r.bottom > top && r.top < client.bottom) DrawCard(dc, r, radius);
@@ -575,14 +613,16 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
                 card(left, top, right - left, SettingsWindowLayout::Scale(104, scale));
                 break;
             case 3: {
-                const int row = SettingsWindowLayout::Scale(86, scale);
+                const int row = SettingsWindowLayout::Scale(104, scale);
+                const int step = SettingsWindowLayout::Scale(112, scale);
                 card(left, top, right - left, row);
-                card(left, top + SettingsWindowLayout::Scale(96, scale), right - left, row);
-                card(left, top + SettingsWindowLayout::Scale(192, scale), right - left, row);
+                card(left, top + step, right - left, row);
+                card(left, top + step * 2, right - left, row);
+                card(left, top + step * 3, right - left, row);
                 break;
             }
             case 4:
-                card(left, top, right - left, SettingsWindowLayout::Scale(122, scale));
+                card(left, top, right - left, SettingsWindowLayout::Scale(210, scale));
                 break;
             case 5:
                 card(left, top, right - left, SettingsWindowLayout::Scale(122, scale));
@@ -678,6 +718,21 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
             BlackHoleSettingsWindow::Show(context->owner);
             DestroyWindow(window);
             return 0;
+        case ScreenshotHotkeyId:
+            if (HIWORD(wp) == EN_CHANGE && !context->updatingScreenshotHotkey) {
+                ApplyScreenshotHotkey(context, context->screenshotHotkeyEdit,
+                                     ReadScreenshotHotkeyControl(context->screenshotHotkeyEdit));
+            }
+            return 0;
+        case ScreenshotHotkeyResetId: {
+            const ScreenshotHotkeyConfig defaults;
+            if (ApplyScreenshotHotkey(context, context->screenshotHotkeyEdit, defaults)) {
+                context->updatingScreenshotHotkey = true;
+                SetScreenshotHotkeyControl(context->screenshotHotkeyEdit, defaults);
+                context->updatingScreenshotHotkey = false;
+            }
+            return 0;
+        }
         case ScreenshotId:
             PostMessageW(context->owner, WM_DESKTODO_START_CAPTURE, 0, 0);
             DestroyWindow(window);
@@ -696,8 +751,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLORBTN:
         SetTextColor(reinterpret_cast<HDC>(wp), TextColor);
-        SetBkColor(reinterpret_cast<HDC>(wp), ContentColor);
-        return reinterpret_cast<LRESULT>(context ? context->contentBrush : nullptr);
+        SetBkMode(reinterpret_cast<HDC>(wp), TRANSPARENT);
+        SetBkColor(reinterpret_cast<HDC>(wp), CardColor);
+        return reinterpret_cast<LRESULT>(GetStockObject(NULL_BRUSH));
     case WM_CTLCOLOREDIT:
         SetTextColor(reinterpret_cast<HDC>(wp), TextColor);
         SetBkColor(reinterpret_cast<HDC>(wp), CardColor);

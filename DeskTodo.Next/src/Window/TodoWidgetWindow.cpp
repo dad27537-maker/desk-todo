@@ -25,10 +25,14 @@ constexpr DWORD StateMagic = 0x4F444F54;
 constexpr DWORD StateVersion = 2;
 constexpr uint32_t MaximumPersistedTextLength = 4096;
 constexpr uint32_t MaximumPersistedDateLength = 10;
-constexpr COLORREF CardBackground = RGB(238, 234, 236);
-constexpr COLORREF CardSurface = RGB(248, 245, 247);
-constexpr COLORREF CardText = RGB(47, 43, 49);
-constexpr COLORREF CardMutedText = RGB(112, 107, 114);
+// iOS-inspired grouped todo surface.
+constexpr COLORREF CardBackground = RGB(242, 242, 247);  // systemGroupedBackground
+constexpr COLORREF CardSurface = RGB(255, 255, 255);
+constexpr COLORREF CardText = RGB(28, 28, 30);
+constexpr COLORREF CardMutedText = RGB(142, 142, 147);
+constexpr COLORREF CardBorder = RGB(229, 229, 234);
+constexpr COLORREF SystemBlue = RGB(0, 122, 255);
+constexpr COLORREF SystemBluePressed = RGB(0, 105, 225);
 
 constexpr UINT TaskPriorityHighId = 5201;
 constexpr UINT TaskPriorityNormalId = 5202;
@@ -76,11 +80,29 @@ const wchar_t* PriorityLabel(TodoPriority priority) {
 
 COLORREF PriorityColor(TodoPriority priority) {
     switch (priority) {
-    case TodoPriority::High: return RGB(224, 72, 72);
-    case TodoPriority::Low: return RGB(83, 199, 157);
-    case TodoPriority::Normal: return RGB(244, 166, 151);
+    case TodoPriority::High: return RGB(255, 59, 48);   // systemRed
+    case TodoPriority::Low: return RGB(52, 199, 89);     // systemGreen
+    case TodoPriority::Normal: return RGB(255, 149, 0);  // systemOrange
     }
-    return RGB(244, 166, 151);
+    return RGB(255, 149, 0);
+}
+
+COLORREF PriorityTintColor(TodoPriority priority) {
+    switch (priority) {
+    case TodoPriority::High: return RGB(255, 235, 234);
+    case TodoPriority::Low: return RGB(232, 248, 236);
+    case TodoPriority::Normal: return RGB(255, 243, 219);
+    }
+    return RGB(255, 243, 219);
+}
+
+COLORREF PriorityTextColor(TodoPriority priority) {
+    switch (priority) {
+    case TodoPriority::High: return RGB(215, 45, 38);
+    case TodoPriority::Low: return RGB(38, 145, 66);
+    case TodoPriority::Normal: return RGB(198, 111, 0);
+    }
+    return RGB(198, 111, 0);
 }
 
 const wchar_t* SortLabel(TodoSortMode mode) {
@@ -142,11 +164,25 @@ void FillRounded(HDC dc, const RECT& rect, int radius, COLORREF color) {
     DeleteObject(brush);
 }
 
+void DrawRoundedOutline(HDC dc, const RECT& rect, int radius,
+                        COLORREF fillColor, COLORREF borderColor) {
+    HBRUSH brush = CreateSolidBrush(fillColor);
+    HPEN pen = CreatePen(PS_SOLID, 1, borderColor);
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom,
+              radius, radius);
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(pen);
+    DeleteObject(brush);
+}
+
 void ApplyCardShape(HWND window) {
     RECT client{};
     if (!window || !GetClientRect(window, &client)) return;
     HRGN region = CreateRoundRectRgn(0, 0, client.right,
-                                     client.bottom, 28, 28);
+                                     client.bottom, 24, 24);
     if (region) SetWindowRgn(window, region, TRUE);
 }
 
@@ -222,7 +258,7 @@ bool TodoWidgetWindow::EnsureWindow() {
         position.left, position.top, windowWidth, windowHeight,
         nullptr, nullptr, instance_, this);
     if (!window_) return false;
-    SetLayeredWindowAttributes(window_, 0, 226, LWA_ALPHA);
+    SetLayeredWindowAttributes(window_, 0, 244, LWA_ALPHA);
     ApplyCardShape(window_);
     return true;
 }
@@ -493,7 +529,7 @@ void TodoWidgetWindow::LayoutControls() {
 }
 
 void TodoWidgetWindow::UpdateControlFont() {
-    HFONT nextFont = CreateFontW(-Scale(16), 0, 0, 0, FW_NORMAL,
+    HFONT nextFont = CreateFontW(-Scale(15), 0, 0, 0, FW_NORMAL,
         FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
         CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
         L"Segoe UI Variable Text");
@@ -697,14 +733,14 @@ void TodoWidgetWindow::EndEditTask(bool commit) {
 void TodoWidgetWindow::Paint(HDC dc) {
     RECT client{};
     GetClientRect(window_, &client);
-    FillRounded(dc, client, 28, CardBackground);
-    HFONT titleFont = CreateFontW(-Scale(18), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+    FillRounded(dc, client, 24, CardBackground);
+    HFONT titleFont = CreateFontW(-Scale(19), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH, L"Segoe UI Variable Display");
-    HFONT bodyFont = CreateFontW(-Scale(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+    HFONT bodyFont = CreateFontW(-Scale(15), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH, L"Segoe UI Variable Text");
-    HFONT doneFont = CreateFontW(-Scale(16), 0, 0, 0, FW_NORMAL, FALSE, TRUE, FALSE,
+    HFONT doneFont = CreateFontW(-Scale(15), 0, 0, 0, FW_NORMAL, FALSE, TRUE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH, L"Segoe UI Variable Text");
     HFONT smallFont = CreateFontW(-Scale(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
@@ -717,7 +753,7 @@ void TodoWidgetWindow::Paint(HDC dc) {
     DrawLabel(dc, title, { Scale(20), Scale(13), sortButton.left - Scale(8), Scale(39) },
               titleFont, CardText,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    FillRounded(dc, sortButton, Scale(12), RGB(220, 215, 220));
+    FillRounded(dc, sortButton, Scale(12), RGB(229, 229, 234));
     DrawLabel(dc, SortLabel(sortMode_), sortButton, smallFont,
               CardMutedText,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -725,13 +761,13 @@ void TodoWidgetWindow::Paint(HDC dc) {
               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     RECT track{ Scale(20), Scale(50), client.right - Scale(20), Scale(55) };
-    FillRounded(dc, track, Scale(5), RGB(216, 211, 216));
+    FillRounded(dc, track, Scale(5), RGB(229, 229, 234));
     if (!items_.empty()) {
         const double completed = static_cast<double>(items_.size() - remaining) / items_.size();
         RECT progress = track;
         progress.right = progress.left + static_cast<int>((track.right - track.left) * completed);
         if (progress.right > progress.left) {
-            FillRounded(dc, progress, Scale(5), RGB(151, 140, 153));
+            FillRounded(dc, progress, Scale(5), SystemBlue);
         }
     }
 
@@ -741,7 +777,7 @@ void TodoWidgetWindow::Paint(HDC dc) {
         if (index >= static_cast<int>(items_.size())) break;
         const TodoItem& item = items_[index];
         const RECT rowRect = RowRect(row);
-        FillRounded(dc, rowRect, Scale(10), CardSurface);
+        DrawRoundedOutline(dc, rowRect, Scale(12), CardSurface, CardBorder);
         RECT priorityStrip{
             rowRect.left + Scale(5), rowRect.top + Scale(7),
             rowRect.left + Scale(9), rowRect.bottom - Scale(7)
@@ -751,8 +787,12 @@ void TodoWidgetWindow::Paint(HDC dc) {
             rowRect.left + Scale(14), rowRect.top + Scale(15),
             rowRect.left + Scale(32), rowRect.top + Scale(33)
         };
-        FillRounded(dc, checkbox, Scale(5),
-                    item.completed ? RGB(151, 140, 153) : RGB(76, 72, 80));
+        if (item.completed) {
+            FillRounded(dc, checkbox, Scale(6), SystemBlue);
+        } else {
+            DrawRoundedOutline(dc, checkbox, Scale(6), CardSurface,
+                               RGB(174, 174, 178));
+        }
         if (item.completed) {
             DrawLabel(dc, L"✓", checkbox, bodyFont, RGB(255, 255, 255),
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -776,7 +816,7 @@ void TodoWidgetWindow::Paint(HDC dc) {
                 rowRect.right - Scale(54), rowRect.bottom - Scale(3)
             };
             DrawLabel(dc, L"截止 " + item.dueDate, dateRect, smallFont,
-                      overdue ? RGB(208, 65, 65) :
+                      overdue ? RGB(215, 45, 38) :
                       (item.completed ? RGB(156, 149, 158) :
                        CardMutedText),
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE |
@@ -799,6 +839,14 @@ void TodoWidgetWindow::Paint(HDC dc) {
                   CardMutedText,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
+
+    // A grouped, floating composer gives the widget the same visual rhythm as
+    // an iOS list: content above, input controls in one white surface below.
+    const RECT composer{
+        Scale(14), client.bottom - Scale(94),
+        client.right - Scale(14), client.bottom - Scale(8)
+    };
+    DrawRoundedOutline(dc, composer, Scale(15), CardSurface, CardBorder);
 
     DeleteObject(titleFont);
     DeleteObject(bodyFont);
@@ -856,7 +904,7 @@ LRESULT TodoWidgetWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
         InitCommonControlsEx(&commonControls);
         inputBrush_ = CreateSolidBrush(CardSurface);
         UpdateControlFont();
-        input_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+        input_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
             ES_AUTOHSCROLL, 20, 258, 262, 32, window_, nullptr, instance_, nullptr);
         addButton_ = CreateWindowExW(0, L"BUTTON", L"+", WS_CHILD | WS_VISIBLE |
             WS_TABSTOP | BS_OWNERDRAW, 292, 258, 48, 32, window_,
@@ -945,7 +993,8 @@ LRESULT TodoWidgetWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
         const auto* draw = reinterpret_cast<DRAWITEMSTRUCT*>(lp);
         if (draw && draw->CtlID == AddButtonId) {
             FillRounded(draw->hDC, draw->rcItem, Scale(10),
-                        draw->itemState & ODS_SELECTED ? RGB(76, 70, 80) : RGB(91, 84, 94));
+                        draw->itemState & ODS_SELECTED
+                            ? SystemBluePressed : SystemBlue);
             HFONT font = CreateFontW(-Scale(20), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                 DEFAULT_PITCH, L"Segoe UI Variable Display");
@@ -955,17 +1004,15 @@ LRESULT TodoWidgetWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
             return TRUE;
         }
         if (draw && draw->CtlID == PriorityButtonId) {
-            const COLORREF color = PriorityColor(inputPriority_);
-            FillRounded(draw->hDC, draw->rcItem, Scale(8), color);
+            FillRounded(draw->hDC, draw->rcItem, Scale(10),
+                        PriorityTintColor(inputPriority_));
             HFONT font = CreateFontW(-Scale(13), 0, 0, 0, FW_SEMIBOLD,
                 FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                 OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                 CLEARTYPE_QUALITY, DEFAULT_PITCH,
                 L"Segoe UI Variable Text");
             DrawLabel(draw->hDC, PriorityLabel(inputPriority_),
-                      draw->rcItem, font,
-                      inputPriority_ == TodoPriority::Low
-                          ? RGB(20, 78, 70) : RGB(255, 255, 255),
+                      draw->rcItem, font, PriorityTextColor(inputPriority_),
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             DeleteObject(font);
             return TRUE;
