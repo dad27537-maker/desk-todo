@@ -1,6 +1,7 @@
 #include "SettingsWindow.h"
 
 #include "Managers/FenceManager.h"
+#include "Services/AppSettings.h"
 #include "Services/LayoutBackupDialog.h"
 #include "Window/AppWindowMessages.h"
 #include "Window/BlackHoleSettingsWindow.h"
@@ -9,7 +10,6 @@
 #include <commctrl.h>
 #include <shellapi.h>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace {
@@ -26,6 +26,9 @@ constexpr int ClockFenceId = 4112;
 constexpr int ScreenshotId = 4109;
 constexpr int BlackHoleId = 4110;
 constexpr int LanTransferId = 4111;
+constexpr int ScreenshotHotkeyId = 4113;
+constexpr int ScreenshotHotkeySaveId = 4114;
+constexpr int ScreenshotHotkeyResetId = 4115;
 constexpr int NavBaseId = 4200;
 constexpr int PageCount = 7;
 
@@ -51,6 +54,7 @@ struct Context {
     FenceManager* manager = nullptr;
     HWND owner = nullptr;
     HWND searchEdit = nullptr;
+    HWND screenshotHotkey = nullptr;
     HWND navButtons[PageCount]{};
     std::vector<HWND> pageControls[PageCount];
     int activePage = 0;
@@ -167,6 +171,7 @@ bool StartupEnabled() {
 }
 
 bool SetStartup(bool enabled) {
+    if (enabled && ExecutablePath().empty()) return false;
     HKEY key = nullptr;
     if (RegCreateKeyExW(HKEY_CURRENT_USER,
         L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, nullptr, 0,
@@ -183,6 +188,61 @@ bool SetStartup(bool enabled) {
     }
     RegCloseKey(key);
     return result == ERROR_SUCCESS;
+}
+
+AppSettings::Hotkey ReadHotkeyControl(HWND control) {
+    if (!control) return AppSettings::DefaultScreenshotHotkeyValue();
+    const WORD packed = static_cast<WORD>(SendMessageW(
+        control, HKM_GETHOTKEY, 0, 0));
+    return AppSettings::FromHotkeyControl(packed);
+}
+
+void WriteHotkeyControl(HWND control, const AppSettings::Hotkey& hotkey) {
+    if (!control) return;
+    SendMessageW(control, HKM_SETHOTKEY,
+                 AppSettings::ToHotkeyControl(hotkey), 0);
+}
+
+bool ApplyScreenshotHotkey(Context* context,
+                           const AppSettings::Hotkey& requested,
+                           bool showSuccessMessage) {
+    if (!context || !context->owner ||
+        !AppSettings::IsValidScreenshotHotkey(requested)) {
+        MessageBoxW(context ? context->owner : nullptr,
+                    L"请同时选择修饰键和一个普通按键。",
+                    L"截图快捷键", MB_OK | MB_ICONWARNING);
+        return false;
+    }
+
+    const AppSettings::Hotkey previous = AppSettings::GetScreenshotHotkey();
+    const LRESULT registered = SendMessageW(
+        context->owner, WM_DESKTODO_RELOAD_SCREENSHOT_HOTKEY,
+        static_cast<WPARAM>(requested.modifiers),
+        static_cast<LPARAM>(requested.virtualKey));
+    if (registered != TRUE) {
+        WriteHotkeyControl(context->screenshotHotkey, previous);
+        MessageBoxW(context->owner,
+                    L"这个快捷键已被其他程序占用，截图快捷键没有改变。",
+                    L"截图快捷键", MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    if (!AppSettings::SetScreenshotHotkey(requested)) {
+        SendMessageW(context->owner, WM_DESKTODO_RELOAD_SCREENSHOT_HOTKEY,
+                     static_cast<WPARAM>(previous.modifiers),
+                     static_cast<LPARAM>(previous.virtualKey));
+        WriteHotkeyControl(context->screenshotHotkey, previous);
+        MessageBoxW(context->owner,
+                    L"快捷键已在本次运行中生效，但保存设置失败。",
+                    L"截图快捷键", MB_OK | MB_ICONERROR);
+        return false;
+    }
+    if (showSuccessMessage) {
+        const std::wstring text = L"截图快捷键已设置为 " +
+            AppSettings::FormatHotkey(requested) + L"。";
+        MessageBoxW(context->owner, text.c_str(), L"截图快捷键",
+                    MB_OK | MB_ICONINFORMATION);
+    }
+    return true;
 }
 
 std::wstring FindEverything() {
@@ -403,6 +463,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
 
     switch (message) {
     case WM_CREATE: {
+        INITCOMMONCONTROLSEX commonControls{ sizeof(commonControls) };
+        commonControls.dwICC = ICC_HOTKEY_CLASS | ICC_STANDARD_CLASSES;
+        InitCommonControlsEx(&commonControls);
         context->contentBrush = CreateSolidBrush(ContentColor);
         context->editBrush = CreateSolidBrush(RGB(244, 251, 248));
         RecreateFonts(context);
@@ -440,8 +503,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
 
         AddControl(context, 2, L"STATIC", L"桌面搜索", 0,
             208, 32, 470, 30, window);
-        AddControl(context, 2, L"STATIC", L"\u4f18\u5148\u4f7f\u7528 Everything\uff0c\u672a\u5b89\u88c5\u65f6\u81ea\u52a8\u4f7f\u7528 Windows \u641c\u7d22", 0,
-            208, 72, 470, 24, window);
+        AddControl(context, 2, L"STATIC", L"\u4f18\u5148\u4f7f\u7528 Everything\uff0c\u672a\u5b89\u88c5\u65f6\u81ea\u52a8\u4f7f\u7528\nWindows \u641c\u7d22", SS_LEFT | SS_NOPREFIX,
+            208, 72, 470, 42, window);
         context->searchEdit = AddControl(context, 2, L"EDIT", L"",
             WS_TABSTOP | ES_AUTOHSCROLL, 226, 118, 350, 38, window,
             SearchEditId, WS_EX_CLIENTEDGE);
@@ -456,40 +519,53 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
             208, 72, 470, 24, window);
         AddControl(context, 3, L"STATIC", L"番茄时钟", 0,
             226, 108, 180, 28, window);
-        AddControl(context, 3, L"STATIC", L"25 分钟专注 / 5 分钟休息，支持暂停、重置与重启恢复", 0,
-            226, 136, 310, 26, window);
+        AddControl(context, 3, L"STATIC", L"25 分钟专注 / 5 分钟休息，支持暂停、重置与\n重启恢复", SS_LEFT | SS_NOPREFIX,
+            226, 136, 300, 42, window);
         AddControl(context, 3, L"BUTTON", L"添加 / 显示",
             BS_OWNERDRAW | WS_TABSTOP, 540, 112, 150, 38, window, PomodoroId);
         AddControl(context, 3, L"STATIC", L"Todo List", 0,
             226, 194, 180, 28, window);
-        AddControl(context, 3, L"STATIC", L"支持优先级、截止日期、过期提示与排序，自动保存", 0,
-            226, 222, 310, 26, window);
+        AddControl(context, 3, L"STATIC", L"支持优先级、截止日期、过期提示与排序，\n自动保存", SS_LEFT | SS_NOPREFIX,
+            226, 222, 300, 42, window);
         AddControl(context, 3, L"BUTTON", L"添加 / 显示",
             BS_OWNERDRAW | WS_TABSTOP, 540, 198, 150, 38, window, TodoId);
         AddControl(context, 3, L"STATIC", L"\u65f6\u95f4\u7ec4\u4ef6", 0,
             226, 280, 220, 28, window);
         AddControl(context, 3, L"STATIC",
-            L"\u663e\u793a\u5f53\u524d\u65f6\u95f4\u3001\u79d2\u6570\u548c\u65e5\u671f\uff0c\u53ef\u79fb\u52a8\u548c\u7f29\u653e", 0,
-            226, 308, 310, 26, window);
+            L"\u663e\u793a\u5f53\u524d\u65f6\u95f4\u3001\u79d2\u6570\u548c\u65e5\u671f\uff0c\n\u53ef\u79fb\u52a8\u548c\u7f29\u653e", SS_LEFT | SS_NOPREFIX,
+            226, 308, 300, 42, window);
         AddControl(context, 3, L"BUTTON", L"\u6dfb\u52a0 / \u663e\u793a",
             BS_OWNERDRAW | WS_TABSTOP, 540, 284, 150, 38, window, ClockFenceId);
         AddControl(context, 3, L"STATIC", L"\u9ed1\u6d1e\u52a8\u6001\u80cc\u666f", 0,
             226, 366, 220, 28, window);
-        AddControl(context, 3, L"STATIC", L"\u5f15\u529b\u900f\u955c\u3001\u5438\u79ef\u76d8\u4e0e HDR Bloom \u5168\u5c4f\u684c\u9762\u80cc\u666f\uff0c\u70b9\u51fb\u5f00\u542f\u6216\u5173\u95ed", 0,
-            226, 394, 310, 26, window);
+        AddControl(context, 3, L"STATIC", L"\u5f15\u529b\u900f\u955c\u3001\u5438\u79ef\u76d8\u4e0e HDR Bloom \u5168\u5c4f\u684c\u9762\n\u80cc\u666f\uff0c\u70b9\u51fb\u5f00\u542f\u6216\u5173\u95ed", SS_LEFT | SS_NOPREFIX,
+            226, 394, 300, 42, window);
         AddControl(context, 3, L"BUTTON", L"\u5f00\u542f / \u5173\u95ed",
             BS_OWNERDRAW | WS_TABSTOP, 540, 370, 150, 38, window, BlackHoleId);
 
         AddControl(context, 4, L"STATIC", L"\u622a\u56fe\u4e0e\u8d34\u56fe", 0,
             208, 32, 470, 30, window);
-        AddControl(context, 4, L"STATIC", L"\u6846\u9009\u540e\u53ef\u590d\u5236\u3001\u4fdd\u5b58 PNG\u3001\u8d34\u56fe\u5230\u684c\u9762\uff0c\u4e5f\u53ef\u4f7f\u7528 Ctrl+Shift+A", 0,
+        AddControl(context, 4, L"STATIC", L"\u6846\u9009\u540e\u53ef\u590d\u5236\u3001\u4fdd\u5b58 PNG\u3001\u8d34\u56fe\u5230\u684c\u9762\u3002\n\u5168\u5c40\u5feb\u6377\u952e\u53ef\u5728\u4e0b\u65b9\u4fee\u6539\u3002", SS_LEFT | SS_NOPREFIX,
             208, 78, 470, 48, window);
         AddControl(context, 4, L"BUTTON", L"\u5f00\u59cb\u622a\u56fe",
-            BS_OWNERDRAW | WS_TABSTOP, 226, 150, 160, 42, window, ScreenshotId);
+            BS_OWNERDRAW | WS_TABSTOP, 226, 142, 160, 42, window, ScreenshotId);
+        AddControl(context, 4, L"STATIC", L"\u622a\u56fe\u5feb\u6377\u952e", 0,
+            226, 204, 180, 28, window);
+        context->screenshotHotkey = AddControl(context, 4, HOTKEY_CLASS, L"",
+            WS_TABSTOP, 226, 234, 220, 38, window, ScreenshotHotkeyId,
+            WS_EX_CLIENTEDGE);
+        WriteHotkeyControl(context->screenshotHotkey,
+                           AppSettings::GetScreenshotHotkey());
+        AddControl(context, 4, L"BUTTON", L"\u4fdd\u5b58",
+            BS_OWNERDRAW | WS_TABSTOP, 468, 234, 100, 38, window,
+            ScreenshotHotkeySaveId);
+        AddControl(context, 4, L"BUTTON", L"\u6062\u590d\u9ed8\u8ba4",
+            BS_OWNERDRAW | WS_TABSTOP, 580, 234, 110, 38, window,
+            ScreenshotHotkeyResetId);
 
         AddControl(context, 5, L"STATIC", L"\u5c40\u57df\u7f51\u5feb\u4f20", 0,
             208, 32, 470, 30, window);
-        AddControl(context, 5, L"STATIC", L"\u786e\u4fdd\u624b\u673a\u4e0e\u7535\u8111\u8fde\u63a5\u540c\u4e00 Wi-Fi\uff0c\u6253\u5f00\u540e\u6309\u9875\u9762\u63d0\u793a\u4f20\u8f93\u6587\u4ef6\u3002", 0,
+        AddControl(context, 5, L"STATIC", L"\u786e\u4fdd\u624b\u673a\u4e0e\u7535\u8111\u8fde\u63a5\u540c\u4e00 Wi-Fi\uff0c\u6253\u5f00\u540e\u6309\u9875\u9762\u63d0\u793a\n\u4f20\u8f93\u6587\u4ef6\u3002", SS_LEFT | SS_NOPREFIX,
             208, 78, 470, 48, window);
         AddControl(context, 5, L"BUTTON", L"\u6253\u5f00\u5feb\u4f20",
             BS_OWNERDRAW | WS_TABSTOP, 226, 150, 160, 42, window, LanTransferId);
@@ -498,8 +574,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
             208, 32, 470, 30, window);
         AddControl(context, 6, L"STATIC", L"DeskTodo.Next 1.7", 0,
             226, 88, 420, 28, window);
-        AddControl(context, 6, L"STATIC", L"\u539f\u751f Windows \u684c\u9762\u6574\u7406\u3001\u6587\u4ef6\u5939\u6620\u5c04\u3001\u5e03\u5c40\u7ba1\u7406\u4e0e\u684c\u9762\u7ec4\u4ef6\u3002", 0,
-            226, 126, 450, 28, window);
+        AddControl(context, 6, L"STATIC", L"\u539f\u751f Windows \u684c\u9762\u6574\u7406\u3001\u6587\u4ef6\u5939\u6620\u5c04\u3001\u5e03\u5c40\u7ba1\u7406\u4e0e\n\u684c\u9762\u7ec4\u4ef6\u3002", SS_LEFT | SS_NOPREFIX,
+            226, 126, 450, 42, window);
         AddControl(context, 6, L"BUTTON", L"查看版本信息",
             BS_OWNERDRAW | WS_TABSTOP, 226, 178, 160, 42, window, AboutId);
 
@@ -555,8 +631,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
             const int left = sidebarWidth + SettingsWindowLayout::Scale(20, scale);
             const int right = client.right - SettingsWindowLayout::Scale(20, scale);
             const int top = SettingsWindowLayout::Scale(84, scale);
-            const int gap = SettingsWindowLayout::Scale(16, scale);
-
             const int scroll = context->scrollOffset;
             const int radius = SettingsWindowLayout::Scale(14, scale);
             auto card = [&](int x, int y, int w, int h) {
@@ -575,14 +649,15 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
                 card(left, top, right - left, SettingsWindowLayout::Scale(104, scale));
                 break;
             case 3: {
-                const int row = SettingsWindowLayout::Scale(86, scale);
+                const int row = SettingsWindowLayout::Scale(94, scale);
                 card(left, top, right - left, row);
                 card(left, top + SettingsWindowLayout::Scale(96, scale), right - left, row);
                 card(left, top + SettingsWindowLayout::Scale(192, scale), right - left, row);
+                card(left, top + SettingsWindowLayout::Scale(288, scale), right - left, row);
                 break;
             }
             case 4:
-                card(left, top, right - left, SettingsWindowLayout::Scale(122, scale));
+                card(left, top, right - left, SettingsWindowLayout::Scale(218, scale));
                 break;
             case 5:
                 card(left, top, right - left, SettingsWindowLayout::Scale(122, scale));
@@ -621,6 +696,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
             const bool enabled = SendDlgItemMessageW(
                 window, StartupId, BM_GETCHECK, 0, 0) == BST_CHECKED;
             if (!SetStartup(enabled)) {
+                SendDlgItemMessageW(window, StartupId, BM_SETCHECK,
+                                    enabled ? BST_UNCHECKED : BST_CHECKED, 0);
                 MessageBoxW(window, L"\u65e0\u6cd5\u66f4\u65b0\u5f00\u673a\u542f\u52a8\u8bbe\u7f6e\u3002", L"DeskTodo",
                             MB_OK | MB_ICONERROR);
             }
@@ -656,10 +733,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
                             MB_OK | MB_ICONINFORMATION);
                 return 0;
             }
-            const std::wstring searchQuery(query);
-            std::thread([window, searchQuery]() {
-                SearchEverything(window, searchQuery);
-            }).detach();
+            SearchEverything(window, query);
             return 0;
         }
         case PomodoroId:
@@ -682,6 +756,18 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
             PostMessageW(context->owner, WM_DESKTODO_START_CAPTURE, 0, 0);
             DestroyWindow(window);
             return 0;
+        case ScreenshotHotkeySaveId:
+            ApplyScreenshotHotkey(context, ReadHotkeyControl(context->screenshotHotkey), true);
+            return 0;
+        case ScreenshotHotkeyResetId: {
+            const auto defaults = AppSettings::DefaultScreenshotHotkeyValue();
+            WriteHotkeyControl(context->screenshotHotkey, defaults);
+            if (ApplyScreenshotHotkey(context, defaults, false)) {
+                MessageBoxW(window, L"截图快捷键已恢复为 Ctrl+Shift+A。",
+                            L"截图快捷键", MB_OK | MB_ICONINFORMATION);
+            }
+            return 0;
+        }
         case LanTransferId:
             PostMessageW(context->owner, WM_DESKTODO_SHOW_LAN_TRANSFER, 0, 0);
             DestroyWindow(window);
