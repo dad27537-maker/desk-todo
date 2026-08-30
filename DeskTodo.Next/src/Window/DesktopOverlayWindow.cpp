@@ -11,6 +11,7 @@
 #include "Services/DesktopIconLayoutService.h"
 #include "Services/IconCache.h"
 #include "Services/LayoutBackupDialog.h"
+#include "Services/AppSettings.h"
 #include "Services/ShellIntegrationService.h"
 #include "Window/SettingsWindow.h"
 #include "Window/AppWindowMessages.h"
@@ -439,7 +440,14 @@ bool DesktopOverlayWindow::Create(HINSTANCE hInst) {
     RegisterHotKey(hwnd, 1002, MOD_CONTROL | MOD_SHIFT, VK_F5);
     RegisterHotKey(hwnd, 1003, MOD_CONTROL | MOD_SHIFT, 'N');
     RegisterHotKey(hwnd, 1004, MOD_CONTROL | MOD_SHIFT, 'L');
-    RegisterHotKey(hwnd, 1005, MOD_CONTROL | MOD_SHIFT, 'A');
+    const auto screenshotHotkey = AppSettings::GetScreenshotHotkey();
+    if (!RegisterHotKey(hwnd, 1005, screenshotHotkey.modifiers,
+                        screenshotHotkey.virtualKey)) {
+        // A stale or conflicting setting must not make the screenshot feature
+        // disappear completely. Keep the documented default as a fallback.
+        RegisterHotKey(hwnd, 1005, AppSettings::DefaultScreenshotHotkeyModifiers,
+                       AppSettings::DefaultScreenshotHotkey);
+    }
     CreateTrayIcon(hInst);
     pomodoroWidget->RestoreIfVisible();
     todoWidget->RestoreIfVisible();
@@ -3768,6 +3776,28 @@ LRESULT DesktopOverlayWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DESKTODO_SHOW_LAN_TRANSFER:
         if (lanTransferWidget) lanTransferWidget->ShowOrCreate();
         return 0;
+
+    case WM_DESKTODO_RELOAD_SCREENSHOT_HOTKEY: {
+        const AppSettings::Hotkey requested{
+            static_cast<UINT>(wp), static_cast<UINT>(lp) };
+        if (!AppSettings::IsValidScreenshotHotkey(requested)) return FALSE;
+
+        const auto previous = AppSettings::GetScreenshotHotkey();
+        UnregisterHotKey(hwnd, 1005);
+        if (RegisterHotKey(hwnd, 1005, requested.modifiers,
+                           requested.virtualKey)) {
+            return TRUE;
+        }
+
+        // Restore the active shortcut when Windows rejects the new one, so a
+        // failed settings change never leaves the running app without capture.
+        if (!RegisterHotKey(hwnd, 1005, previous.modifiers, previous.virtualKey)) {
+            RegisterHotKey(hwnd, 1005,
+                           AppSettings::DefaultScreenshotHotkeyModifiers,
+                           AppSettings::DefaultScreenshotHotkey);
+        }
+        return FALSE;
+    }
 
     case WM_COMMAND: {
         switch (LOWORD(wp)) {

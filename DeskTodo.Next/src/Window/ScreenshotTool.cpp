@@ -94,7 +94,7 @@ constexpr CaptureAction ToolbarActions[] = {
 const wchar_t* CaptureActionHint(CaptureAction action) {
     switch (action) {
     case CaptureAction::Cancel: return L"取消";
-    case CaptureAction::Pin: return L"贴图";
+    case CaptureAction::Pin: return L"钉住";
     case CaptureAction::Save: return L"保存";
     case CaptureAction::Copy: return L"复制";
     case CaptureAction::Ocr: return L"文字识别";
@@ -332,8 +332,16 @@ void ScreenshotTool::DestroyCaptureBuffer() {
 
 void ScreenshotTool::Destroy() {
     CancelCapture();
-    if (pinWindow_) { DestroyWindow(pinWindow_); pinWindow_ = nullptr; }
-    if (pinnedBitmap_) { DeleteObject(pinnedBitmap_); pinnedBitmap_ = nullptr; }
+    while (!pinnedImages_.empty()) {
+        HWND window = pinnedImages_.back().window;
+        if (window) {
+            DestroyWindow(window);
+        } else {
+            if (pinnedImages_.back().bitmap)
+                DeleteObject(pinnedImages_.back().bitmap);
+            pinnedImages_.pop_back();
+        }
+    }
 }
 
 void ScreenshotTool::CancelCapture() {
@@ -751,10 +759,9 @@ bool ScreenshotTool::SavePng(HBITMAP bitmap, const std::wstring& path) {
     return SUCCEEDED(result);
 }
 
-bool ScreenshotTool::CopyToClipboard(HBITMAP bitmap) {
+bool ScreenshotTool::CopyToClipboard(HBITMAP bitmap, HWND owner) {
     HBITMAP copy = static_cast<HBITMAP>(CopyImage(bitmap, IMAGE_BITMAP, 0, 0,
                                                   LR_CREATEDIBSECTION));
-    HWND owner = captureWindow_ ? captureWindow_ : pinWindow_;
     if (!copy || !OpenClipboard(owner)) {
         if (copy) DeleteObject(copy);
         return false;
@@ -811,27 +818,27 @@ bool ScreenshotTool::CopyToClipboard(HBITMAP bitmap) {
     return bitmapSet;
 }
 
-bool ScreenshotTool::SavePinnedAs() {
-    if (!pinnedBitmap_) return false;
-    std::wstring suggested = lastSavedPath_.empty() ? CreateSavePath() : lastSavedPath_;
+bool ScreenshotTool::SavePinnedAs(HWND window) {
+    PinnedImage* pin = FindPinnedImage(window);
+    if (!pin || !pin->bitmap) return false;
+    std::wstring suggested = pin->savedPath.empty() ? CreateSavePath() : pin->savedPath;
     wchar_t path[32768]{};
     wcsncpy_s(path, suggested.c_str(), _TRUNCATE);
     OPENFILENAMEW dialog{ sizeof(dialog) };
-    dialog.hwndOwner = pinWindow_;
+    dialog.hwndOwner = window;
     dialog.lpstrFilter = L"PNG 图像 (*.png)\0*.png\0所有文件 (*.*)\0*.*\0\0";
     dialog.lpstrFile = path;
     dialog.nMaxFile = static_cast<DWORD>(std::size(path));
     dialog.lpstrDefExt = L"png";
     dialog.Flags = OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
     if (!GetSaveFileNameW(&dialog)) return CommDlgExtendedError() == 0;
-    if (!SavePng(pinnedBitmap_, path)) {
-        MessageBoxW(pinWindow_, L"无法保存截图，请选择其他文件夹后重试。",
+    if (!SavePng(pin->bitmap, path)) {
+        MessageBoxW(window, L"无法保存截图，请选择其他文件夹后重试。",
                     L"DeskTodo 截图", MB_OK | MB_ICONERROR);
         return false;
     }
-    lastSavedPath_ = path;
-    lastSaveSucceeded_ = true;
-    SetWindowTextW(pinWindow_, lastSavedPath_.c_str());
+    pin->savedPath = path;
+    SetWindowTextW(window, pin->savedPath.c_str());
     return true;
 }
 
@@ -933,7 +940,7 @@ void ScreenshotTool::ExecuteCaptureAction(CaptureAction action) {
         return;
     }
     if (action == CaptureAction::Copy) {
-        const bool copied = CopyToClipboard(bitmap);
+        const bool copied = CopyToClipboard(bitmap, captureWindow_);
         DeleteObject(bitmap);
         if (copied) CancelCapture();
         else MessageBoxW(captureWindow_, L"无法复制截图到剪贴板。",
@@ -996,50 +1003,93 @@ void ScreenshotTool::CompleteCapture() {
                     MB_OK | MB_ICONERROR);
         return;
     }
-    CopyToClipboard(cropped);
+    CopyToClipboard(cropped, captureWindow_);
     lastSavedPath_ = CreateSavePath();
     lastSaveSucceeded_ = SavePng(cropped, lastSavedPath_);
     const RECT sourceRegion = selection_;
     CancelCapture();
     ShowPinnedBitmap(cropped, sourceRegion);
     if (!lastSaveSucceeded_) {
-        MessageBoxW(pinWindow_, L"自动保存失败，截图仍保留在贴图中。\n右键贴图可选择“另存为”。",
+        const HWND pinWindow = pinnedImages_.empty() ? nullptr : pinnedImages_.back().window;
+        MessageBoxW(pinWindow, L"自动保存失败，截图仍保留在贴图中。\n右键贴图可选择“另存为”。",
                     L"DeskTodo 截图", MB_OK | MB_ICONWARNING);
     }
 }
 
 void ScreenshotTool::ShowPinnedBitmap(HBITMAP bitmap, const RECT& sourceRegion) {
-    if (pinWindow_) DestroyWindow(pinWindow_);
-    if (pinnedBitmap_) DeleteObject(pinnedBitmap_);
-    pinnedBitmap_ = bitmap;
+    if (!bitmap) return;
     BITMAP details{};
-    GetObjectW(bitmap, sizeof(details), &details);
-    pinnedSourceSize_ = { details.bmWidth, details.bmHeight };
+    if (!GetObjectW(bitmap, sizeof(details), &details) ||
+        details.bmWidth <= 0 || details.bmHeight <= 0) {
+        DeleteObject(bitmap);
+        return;
+    }
     const SIZE preview = CaptureRegion::FitPreview(
         { 0, 0, details.bmWidth, details.bmHeight });
-    pinScale_ = static_cast<double>(preview.cx) / details.bmWidth;
-    const wchar_t* title = lastSaveSucceeded_
-        ? lastSavedPath_.c_str() : L"截图贴图（未保存，右键另存为）";
-    pinWindow_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+    PinnedImage pin;
+    pin.bitmap = bitmap;
+    pin.sourceSize = { details.bmWidth, details.bmHeight };
+    pin.scale = static_cast<double>(preview.cx) / details.bmWidth;
+    if (lastSaveSucceeded_) pin.savedPath = lastSavedPath_;
+    pinnedImages_.push_back(std::move(pin));
+    PinnedImage& added = pinnedImages_.back();
+    const wchar_t* title = added.savedPath.empty()
+        ? L"截图贴图（未保存，右键另存为）" : added.savedPath.c_str();
+    added.window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         PinClass, title, WS_POPUP,
         sourceRegion.left, sourceRegion.top, preview.cx, preview.cy,
         nullptr, nullptr, instance_, this);
-    if (pinWindow_) {
-        ShowWindow(pinWindow_, SW_SHOW);
-        SetForegroundWindow(pinWindow_);
+    if (!added.window) {
+        DeleteObject(added.bitmap);
+        pinnedImages_.pop_back();
+        return;
     }
+    ShowWindow(added.window, SW_SHOW);
+    SetForegroundWindow(added.window);
 }
 
-void ScreenshotTool::PaintPin(HDC dc) {
+ScreenshotTool::PinnedImage* ScreenshotTool::FindPinnedImage(HWND window) {
+    for (auto& pin : pinnedImages_) {
+        if (pin.window == window) return &pin;
+    }
+    return nullptr;
+}
+
+void ScreenshotTool::SetPinAlwaysOnTop(HWND window, bool enabled) {
+    PinnedImage* pin = FindPinnedImage(window);
+    if (!pin) return;
+    pin->alwaysOnTop = enabled;
+    SetWindowPos(window, enabled ? HWND_TOPMOST : HWND_NOTOPMOST,
+                 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    InvalidateRect(window, nullptr, FALSE);
+}
+
+void ScreenshotTool::SetPinLocked(HWND window, bool locked) {
+    PinnedImage* pin = FindPinnedImage(window);
+    if (!pin) return;
+    pin->locked = locked;
+    if (locked && pin->dragging) {
+        pin->dragging = false;
+        if (GetCapture() == window) ReleaseCapture();
+    }
+    InvalidateRect(window, nullptr, FALSE);
+}
+
+void ScreenshotTool::PaintPin(HWND window, HDC dc) {
+    PinnedImage* pin = FindPinnedImage(window);
+    if (!pin || !pin->bitmap) return;
     RECT client{};
-    GetClientRect(pinWindow_, &client);
+    GetClientRect(window, &client);
     HDC source = CreateCompatibleDC(dc);
-    HGDIOBJ old = SelectObject(source, pinnedBitmap_);
-    SetStretchBltMode(dc, HALFTONE);
-    StretchBlt(dc, 0, 0, client.right, client.bottom, source,
-               0, 0, pinnedSourceSize_.cx, pinnedSourceSize_.cy, SRCCOPY);
-    SelectObject(source, old);
-    DeleteDC(source);
+    if (source) {
+        HGDIOBJ old = SelectObject(source, pin->bitmap);
+        SetStretchBltMode(dc, HALFTONE);
+        StretchBlt(dc, 0, 0, client.right, client.bottom, source,
+                   0, 0, pin->sourceSize.cx, pin->sourceSize.cy, SRCCOPY);
+        SelectObject(source, old);
+        DeleteDC(source);
+    }
     RECT close{ client.right - 26, 6, client.right - 6, 26 };
     FillArea(dc, close, RGB(30, 33, 41));
     SetBkMode(dc, TRANSPARENT);
@@ -1047,17 +1097,19 @@ void ScreenshotTool::PaintPin(HDC dc) {
     DrawTextW(dc, L"×", -1, &close, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
-void ScreenshotTool::ResizePin(double scale) {
-    if (!pinWindow_ || !pinnedBitmap_ || pinnedSourceSize_.cx <= 0 ||
-        pinnedSourceSize_.cy <= 0) {
+void ScreenshotTool::ResizePin(HWND window, double scale) {
+    PinnedImage* pin = FindPinnedImage(window);
+    if (!pin || pin->locked || !pin->bitmap || pin->sourceSize.cx <= 0 ||
+        pin->sourceSize.cy <= 0) {
         return;
     }
-    pinScale_ = (std::clamp)(scale, 0.2, 3.0);
-    const int width = (std::max)(80, static_cast<int>(pinnedSourceSize_.cx * pinScale_));
-    const int height = (std::max)(60, static_cast<int>(pinnedSourceSize_.cy * pinScale_));
-    SetWindowPos(pinWindow_, HWND_TOPMOST, 0, 0, width, height,
+    pin->scale = (std::clamp)(scale, 0.2, 3.0);
+    const int width = (std::max)(80, static_cast<int>(pin->sourceSize.cx * pin->scale));
+    const int height = (std::max)(60, static_cast<int>(pin->sourceSize.cy * pin->scale));
+    SetWindowPos(window, pin->alwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST,
+                 0, 0, width, height,
                  SWP_NOMOVE | SWP_NOACTIVATE);
-    InvalidateRect(pinWindow_, nullptr, FALSE);
+    InvalidateRect(window, nullptr, FALSE);
 }
 
 LRESULT CALLBACK ScreenshotTool::CaptureWindowProc(HWND window, UINT message,
@@ -1291,13 +1343,13 @@ LRESULT CALLBACK ScreenshotTool::PinWindowProc(HWND window, UINT message,
     auto* self = reinterpret_cast<ScreenshotTool*>(GetWindowLongPtrW(window, GWLP_USERDATA));
     if (message == WM_NCCREATE) {
         self = static_cast<ScreenshotTool*>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams);
-        self->pinWindow_ = window;
         SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
     }
-    return self ? self->OnPinMessage(message, wp, lp) : DefWindowProcW(window, message, wp, lp);
+    return self ? self->OnPinMessage(window, message, wp, lp)
+                : DefWindowProcW(window, message, wp, lp);
 }
 
-LRESULT ScreenshotTool::OnPinMessage(UINT message, WPARAM wp, LPARAM lp) {
+LRESULT ScreenshotTool::OnPinMessage(HWND window, UINT message, WPARAM wp, LPARAM lp) {
     switch (message) {
     case WM_SETCURSOR:
         SetCursor(LoadCursorW(nullptr, IDC_ARROW));
@@ -1305,73 +1357,121 @@ LRESULT ScreenshotTool::OnPinMessage(UINT message, WPARAM wp, LPARAM lp) {
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: {
         PAINTSTRUCT paint{};
-        HDC dc = BeginPaint(pinWindow_, &paint);
-        PaintPin(dc);
-        EndPaint(pinWindow_, &paint);
+        HDC dc = BeginPaint(window, &paint);
+        PaintPin(window, dc);
+        EndPaint(window, &paint);
         return 0;
     }
     case WM_LBUTTONDOWN: {
+        PinnedImage* pin = FindPinnedImage(window);
+        if (!pin) return 0;
         RECT client{};
-        GetClientRect(pinWindow_, &client);
+        GetClientRect(window, &client);
         POINT point{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
         if (point.x >= client.right - 30 && point.y <= 30) {
-            DestroyWindow(pinWindow_);
+            DestroyWindow(window);
             return 0;
         }
-        pinDragging_ = true;
-        GetPhysicalCursorPos(&pinDragStart_);
-        GetWindowRect(pinWindow_, &pinDragRect_);
-        SetCapture(pinWindow_);
+        if (pin->locked) return 0;
+        pin->dragging = true;
+        GetPhysicalCursorPos(&pin->dragStart);
+        GetWindowRect(window, &pin->dragRect);
+        SetCapture(window);
         return 0;
     }
     case WM_MOUSEMOVE:
-        if (pinDragging_) {
+        if (PinnedImage* pin = FindPinnedImage(window);
+            pin && pin->dragging && !pin->locked) {
             POINT cursor{};
             GetPhysicalCursorPos(&cursor);
-            SetWindowPos(pinWindow_, HWND_TOPMOST,
-                pinDragRect_.left + cursor.x - pinDragStart_.x,
-                pinDragRect_.top + cursor.y - pinDragStart_.y,
+            SetWindowPos(window, pin->alwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST,
+                pin->dragRect.left + cursor.x - pin->dragStart.x,
+                pin->dragRect.top + cursor.y - pin->dragStart.y,
                 0, 0, SWP_NOSIZE);
         }
         return 0;
     case WM_LBUTTONUP:
-        pinDragging_ = false;
-        if (GetCapture() == pinWindow_) ReleaseCapture();
+        if (PinnedImage* pin = FindPinnedImage(window); pin) pin->dragging = false;
+        if (GetCapture() == window) ReleaseCapture();
         return 0;
     case WM_LBUTTONDBLCLK:
     case WM_CLOSE:
-        DestroyWindow(pinWindow_);
+        DestroyWindow(window);
         return 0;
     case WM_KEYDOWN:
-        if (wp == VK_ESCAPE) { DestroyWindow(pinWindow_); return 0; }
-        if (IsControlPressed()) {
-            if (wp == 'C') { CopyToClipboard(pinnedBitmap_); return 0; }
-            if (wp == 'S') { SavePinnedAs(); return 0; }
+        if (PinnedImage* pin = FindPinnedImage(window); pin) {
+            const bool control = IsControlPressed();
+            if (wp == VK_ESCAPE || (control && wp == 'W')) {
+                DestroyWindow(window);
+                return 0;
+            }
+            if (control) {
+                if (wp == 'C') { CopyToClipboard(pin->bitmap, window); return 0; }
+                if (wp == 'S') { SavePinnedAs(window); return 0; }
+            } else if (wp == 'T') {
+                SetPinAlwaysOnTop(window, !pin->alwaysOnTop);
+                return 0;
+            } else if (wp == 'L') {
+                SetPinLocked(window, !pin->locked);
+                return 0;
+            } else if (!pin->locked &&
+                       (wp == VK_LEFT || wp == VK_RIGHT ||
+                        wp == VK_UP || wp == VK_DOWN)) {
+                RECT position{};
+                GetWindowRect(window, &position);
+                LONG dx = 0;
+                LONG dy = 0;
+                if (wp == VK_LEFT) dx = -1;
+                if (wp == VK_RIGHT) dx = 1;
+                if (wp == VK_UP) dy = -1;
+                if (wp == VK_DOWN) dy = 1;
+                SetWindowPos(window, pin->alwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST,
+                             position.left + dx, position.top + dy, 0, 0,
+                             SWP_NOSIZE | SWP_NOACTIVATE);
+                return 0;
+            }
         }
         break;
     case WM_RBUTTONUP: {
+        PinnedImage* pin = FindPinnedImage(window);
+        if (!pin) return 0;
         HMENU menu = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING, 1, L"另存为...");
         AppendMenuW(menu, MF_STRING, 2, L"复制到剪贴板");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING | (pin->alwaysOnTop ? MF_CHECKED : MF_UNCHECKED),
+                    4, pin->alwaysOnTop ? L"取消置顶" : L"始终置顶");
+        AppendMenuW(menu, MF_STRING | (pin->locked ? MF_CHECKED : MF_UNCHECKED),
+                    5, pin->locked ? L"解锁位置" : L"锁定位置");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, 3, L"关闭贴图");
         POINT point{};
         GetPhysicalCursorPos(&point);
         const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
-                                             point.x, point.y, 0, pinWindow_, nullptr);
+                                             point.x, point.y, 0, window, nullptr);
         DestroyMenu(menu);
-        if (command == 1) SavePinnedAs();
-        else if (command == 2) CopyToClipboard(pinnedBitmap_);
-        else if (command == 3) DestroyWindow(pinWindow_);
+        if (command == 1) SavePinnedAs(window);
+        else if (command == 2) CopyToClipboard(pin->bitmap, window);
+        else if (command == 3) DestroyWindow(window);
+        else if (command == 4) SetPinAlwaysOnTop(window, !pin->alwaysOnTop);
+        else if (command == 5) SetPinLocked(window, !pin->locked);
         return 0;
     }
     case WM_MOUSEWHEEL:
-        ResizePin(pinScale_ * (GET_WHEEL_DELTA_WPARAM(wp) > 0 ? 1.1 : 0.9));
+        if (PinnedImage* pin = FindPinnedImage(window); pin) {
+            ResizePin(window, pin->scale *
+                (GET_WHEEL_DELTA_WPARAM(wp) > 0 ? 1.1 : 0.9));
+        }
         return 0;
     case WM_DESTROY:
-        pinWindow_ = nullptr;
-        if (pinnedBitmap_) { DeleteObject(pinnedBitmap_); pinnedBitmap_ = nullptr; }
+        if (GetCapture() == window) ReleaseCapture();
+        if (PinnedImage* pin = FindPinnedImage(window); pin) {
+            if (pin->bitmap) DeleteObject(pin->bitmap);
+            const auto iterator = std::find_if(pinnedImages_.begin(), pinnedImages_.end(),
+                [window](const PinnedImage& item) { return item.window == window; });
+            if (iterator != pinnedImages_.end()) pinnedImages_.erase(iterator);
+        }
         return 0;
     }
-    return DefWindowProcW(pinWindow_, message, wp, lp);
+    return DefWindowProcW(window, message, wp, lp);
 }
