@@ -38,6 +38,17 @@ bool AppCore::Initialize(HINSTANCE hInst) {
     DesktopShellService::ReconcileSuppressedDesktopPaths();
     DesktopShellService::EndNativeDesktopUpdate();
 
+    // Keep the desktop launcher synchronized with the running executable so
+    // Windows picks up the bundled application icon after an upgrade.
+    wchar_t executablePath[32768]{};
+    const DWORD executableLength = GetModuleFileNameW(
+        hInst, executablePath, static_cast<DWORD>(std::size(executablePath)));
+    if (executableLength > 0 &&
+        executableLength < std::size(executablePath)) {
+        ShellIntegrationService::EnsureDesktopShortcut(
+            std::wstring(executablePath, executableLength));
+    }
+
     return true;
 }
 
