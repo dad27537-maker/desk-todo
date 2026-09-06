@@ -41,6 +41,7 @@ Thumbs.db
 
 # Test artifacts
 *.png
+!DeskTodo.Next/src/assets/desktodo-icon.png
 *.jpg
 
 # Logs

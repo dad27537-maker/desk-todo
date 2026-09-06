@@ -38,6 +38,17 @@ bool AppCore::Initialize(HINSTANCE hInst) {
     DesktopShellService::ReconcileSuppressedDesktopPaths();
     DesktopShellService::EndNativeDesktopUpdate();
 
+    // Keep the desktop launcher pointed at the current executable so Windows
+    // refreshes the bundled DeskTodo icon after an upgrade.
+    wchar_t executablePath[32768]{};
+    const DWORD executableLength = GetModuleFileNameW(
+        hInst, executablePath, static_cast<DWORD>(std::size(executablePath)));
+    if (executableLength > 0 &&
+        executableLength < std::size(executablePath)) {
+        ShellIntegrationService::EnsureDesktopShortcut(
+            std::wstring(executablePath, executableLength));
+    }
+
     return true;
 }
 
