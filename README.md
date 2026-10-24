@@ -27,7 +27,10 @@ DeskTodo 是一款原生 Windows 桌面整理工具。它用可移动、可缩�
 - 画笔、箭头、文字、矩形框标注。
 - 可分别设置标注粗细、字体、字号和颜色。
 - 工具栏使用图标显示，鼠标悬停时显示中文功能提示。
-- 支持 Windows OCR 文本识别和 LaTeX 识别结果窗口。
+- 优先使用本地 PP-OCRv6 medium 模型识别文字，支持中文、英文及混排；模型不可用时自动使用 Windows OCR。
+- 对小尺寸文字自动放大并保留笔画细节，处理深色背景和低对比度，保留多行文字的换行。
+- 识别在后台运行，截图界面保持响应，按 Esc 可取消；识别成功后复制文本并打开结果窗口。
+- 支持 LaTeX 识别结果窗口（由 OCR 文本转换，不是专用公式识别模型）。
 - 贴图窗口支持缩放、复制、另存为和关闭。
 
 ### 局域网快传
@@ -79,7 +82,7 @@ DeskTodo 是一款原生 Windows 桌面整理工具。它用可移动、可缩�
   - MSVC x64 工具链
   - Windows 10/11 SDK
   - CMake 3.15 或更高版本
-- OCR 需要系统安装可用的中文或英文 Windows OCR 语言包
+- PP-OCRv6 离线识别不依赖系统语言包；Windows OCR 后备引擎需要系统安装相应语言包
 - Everything 为可选依赖
 
 ## 获取源码
@@ -98,6 +101,16 @@ git submodule update --init --recursive
 ```
 
 ## 构建
+
+启用高精度离线 OCR，先执行一次：
+
+```powershell
+.\DeskTodo.Next\setup-ocr.ps1
+```
+
+脚本会下载固定版本的 ONNX Runtime、OpenCV 和 PP-OCRv6 medium 检测/识别
+模型并校验 SHA256，存放在被 Git 忽略的 `DeskTodo.Next\deps\ocr` 下。
+首次准备需要联网；实际识别完全在本机进行，不上传截图。
 
 Visual Studio 2026：
 
@@ -120,6 +133,8 @@ DeskTodo.Next\build\Release\DeskTodo.Next.exe
 ```
 
 构建结束后，黑洞着色器、预设和运行资源会自动复制到 `Release` 目录。请保留这些资源与 EXE 的相对位置。
+启用 PP-OCRv6 后，构建也会生成 `Release\ocr`，分发程序时需同时保留这个目录
+（模型、原生 DLL 及许可证，约 210 MB）。未准备离线模型的源码构建会使用增强后的 Windows OCR。
 
 ## 运行
 

@@ -21,6 +21,7 @@ namespace {
 
 constexpr wchar_t CaptureClass[] = L"DeskTodoCaptureOverlay";
 constexpr wchar_t PinClass[] = L"DeskTodoPinnedCapture";
+constexpr UINT_PTR OcrTimerId = 0x4F43;
 
 RECT ToClientRect(const RECT& screenRect, const RECT& virtualScreen) {
     return { screenRect.left - virtualScreen.left, screenRect.top - virtualScreen.top,
@@ -329,6 +330,14 @@ bool ScreenshotTool::CaptureVirtualScreen() {
 }
 
 bool ScreenshotTool::StartCapture() {
+    if (ocrThread_.joinable()) {
+        if (ocrWork_ && !ocrWork_->complete.load()) {
+            if (captureWindow_) SetForegroundWindow(captureWindow_);
+            return false;
+        }
+        ocrThread_.join();
+        ocrWork_.reset();
+    }
     CaptureDiag(L"StartCapture: begin");
     SetCursor(LoadCursorW(nullptr, IDC_CROSS));
     GdiFlush();
@@ -397,11 +406,14 @@ void ScreenshotTool::DestroyCaptureBuffer() {
 
 void ScreenshotTool::Destroy() {
     CancelCapture();
+    if (ocrThread_.joinable()) ocrThread_.join();
+    ocrWork_.reset();
     if (pinWindow_) { DestroyWindow(pinWindow_); pinWindow_ = nullptr; }
     if (pinnedBitmap_) { DeleteObject(pinnedBitmap_); pinnedBitmap_ = nullptr; }
 }
 
 void ScreenshotTool::CancelCapture() {
+    if (captureWindow_) KillTimer(captureWindow_, OcrTimerId);
     if (captureWindow_) KillTimer(captureWindow_, CaptureHintTimerId);
     if (GetCapture() == captureWindow_) ReleaseCapture();
     if (captureWindow_) { DestroyWindow(captureWindow_); captureWindow_ = nullptr; }
@@ -600,8 +612,9 @@ void ScreenshotTool::PaintCaptureToolbar(HDC dc) {
 }
 
 void ScreenshotTool::PaintCaptureHint(HDC dc) {
-    const CaptureAction hintAction = hoveredHintAction_ != CaptureAction::None
-        ? hoveredHintAction_ : clickedHintAction_;
+    const bool recognizing = ocrWork_ && !ocrWork_->complete.load();
+    const CaptureAction hintAction = recognizing ? CaptureAction::Ocr :
+        (hoveredHintAction_ != CaptureAction::None ? hoveredHintAction_ : clickedHintAction_);
     if (hintAction == CaptureAction::None) return;
     const auto toolbar = CaptureToolbar::Build(selection_, virtualScreen_);
     size_t index = 0;
@@ -611,8 +624,8 @@ void ScreenshotTool::PaintCaptureHint(HDC dc) {
     if (index == std::size(ToolbarActions)) return;
 
     const RECT button = toolbar.buttons[index];
-    const wchar_t* label = CaptureActionHint(hintAction);
-    const int width = hintAction == CaptureAction::LatexOcr ? 124 : 92;
+    const wchar_t* label = recognizing ? L"正在识别，Esc 取消" : CaptureActionHint(hintAction);
+    const int width = recognizing ? 172 : (hintAction == CaptureAction::LatexOcr ? 124 : 92);
     LONG left = (button.left + button.right - width) / 2;
     LONG top = toolbar.bounds.top - 40;
     if (top < virtualScreen_.top + 4) top = toolbar.bounds.bottom + 8;
@@ -1053,6 +1066,7 @@ HBITMAP ScreenshotTool::CreateSelectionBitmap() {
 void ScreenshotTool::ExecuteCaptureAction(CaptureAction action) {
     if (action == CaptureAction::None) return;
     if (action == CaptureAction::Cancel) { CancelCapture(); return; }
+    if (ocrWork_) return;
     if (action == CaptureAction::Move || action == CaptureAction::Arrow ||
         action == CaptureAction::Text || action == CaptureAction::Rectangle) {
         activeTool_ = action;
@@ -1103,24 +1117,46 @@ void ScreenshotTool::ExecuteCaptureAction(CaptureAction action) {
         return;
     }
     if (action == CaptureAction::Ocr || action == CaptureAction::LatexOcr) {
-        std::wstring text;
-        std::wstring error;
-        const bool latex = action == CaptureAction::LatexOcr;
-        const bool recognized = latex
-            ? OcrService::RecognizeLatexBitmap(bitmap, text, error)
-            : OcrService::RecognizeBitmap(bitmap, text, error);
-        DeleteObject(bitmap);
-        if (!recognized) {
-            MessageBoxW(captureWindow_, error.c_str(),
-                        latex ? L"DeskTodo LaTeX OCR" : L"DeskTodo OCR",
-                        MB_OK | MB_ICONINFORMATION);
+        GdiFlush(); // Finish UI-thread drawing before the worker reads this bitmap.
+        ocrWork_ = std::make_unique<OcrWork>();
+        ocrWork_->latex = action == CaptureAction::LatexOcr;
+        OcrWork* work = ocrWork_.get();
+        try {
+            ocrThread_ = std::thread([work, bitmap] {
+                try {
+                    work->success = work->latex
+                        ? OcrService::RecognizeLatexBitmap(bitmap, work->text, work->error)
+                        : OcrService::RecognizeBitmap(bitmap, work->text, work->error);
+                } catch (...) {
+                    work->error = L"文字识别失败，请重新截取后重试。";
+                }
+                DeleteObject(bitmap);
+                work->complete = true;
+            });
+        } catch (...) {
+            DeleteObject(bitmap);
+            ocrWork_.reset();
+            MessageBoxW(captureWindow_, L"无法启动文字识别，请稍后重试。", L"DeskTodo OCR", MB_OK | MB_ICONERROR);
             return;
         }
-        CopyText(captureWindow_, text);
-        CancelCapture();
-        OcrResultWindow::Show(nullptr, text,
-            latex ? L"LaTeX 识别结果" : L"OCR 识别结果");
+        SetTimer(captureWindow_, OcrTimerId, 50, nullptr);
+        InvalidateRect(captureWindow_, nullptr, FALSE);
     }
+}
+
+void ScreenshotTool::FinishOcr() {
+    if (!ocrWork_ || !ocrWork_->complete.load()) return;
+    KillTimer(captureWindow_, OcrTimerId);
+    ocrThread_.join();
+    auto work = std::move(ocrWork_);
+    if (!work->success) {
+        InvalidateRect(captureWindow_, nullptr, FALSE);
+        MessageBoxW(captureWindow_, work->error.c_str(), L"DeskTodo OCR", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    CopyText(captureWindow_, work->text);
+    CancelCapture();
+    OcrResultWindow::Show(nullptr, work->text, work->latex ? L"LaTeX 识别结果" : L"OCR 识别结果");
 }
 
 void ScreenshotTool::CompleteCapture() {
@@ -1234,9 +1270,13 @@ LRESULT CALLBACK ScreenshotTool::CaptureWindowProc(HWND window, UINT message,
 }
 
 LRESULT ScreenshotTool::OnCaptureMessage(UINT message, WPARAM wp, LPARAM lp) {
+    if (ocrWork_ && ((message == WM_LBUTTONDOWN || message == WM_LBUTTONUP ||
+                     message == WM_MOUSEMOVE || message == WM_CHAR) ||
+                    (message == WM_KEYDOWN && wp != VK_ESCAPE))) return 0;
     switch (message) {
     case WM_SETCURSOR:
-        SetCursor(LoadCursorW(nullptr, selectionReady_ && !selecting_ ? IDC_ARROW : IDC_CROSS));
+        SetCursor(LoadCursorW(nullptr, ocrWork_ ? IDC_APPSTARTING :
+            (selectionReady_ && !selecting_ ? IDC_ARROW : IDC_CROSS)));
         return TRUE;
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: {
@@ -1433,6 +1473,7 @@ LRESULT ScreenshotTool::OnCaptureMessage(UINT message, WPARAM wp, LPARAM lp) {
         CancelCapture();
         return 0;
     case WM_TIMER:
+        if (wp == OcrTimerId) { FinishOcr(); return 0; }
         if (wp == CaptureHintTimerId) {
             KillTimer(captureWindow_, CaptureHintTimerId);
             clickedHintAction_ = CaptureAction::None;

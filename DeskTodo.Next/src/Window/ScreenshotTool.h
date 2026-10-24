@@ -4,6 +4,9 @@
 #include <commctrl.h>
 #include <string>
 #include <vector>
+#include <atomic>
+#include <memory>
+#include <thread>
 
 #include "Models/CaptureToolbar.h"
 
@@ -25,6 +28,16 @@ public:
     void Destroy();
 
 private:
+    friend struct ScreenshotOcrTestAccess;
+    struct OcrWork {
+        std::atomic<bool> complete{false};
+        bool latex = false;
+        bool success = false;
+        std::wstring text, error;
+    };
+    std::unique_ptr<OcrWork> ocrWork_;
+    std::thread ocrThread_;
+    void FinishOcr();
     struct Stroke { std::vector<POINT> points; COLORREF color{}; int width = 3; };
     struct ArrowMark { POINT start{}; POINT end{}; COLORREF color{}; int width = 3; };
     struct TextMark {
