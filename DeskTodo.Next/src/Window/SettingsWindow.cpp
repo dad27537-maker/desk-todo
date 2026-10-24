@@ -532,7 +532,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
 
         AddControl(context, 5, L"STATIC", L"\u5c40\u57df\u7f51\u5feb\u4f20", 0,
             208, 32, 470, 30, window);
-        AddControl(context, 5, L"STATIC", L"手机与电脑连接同一 Wi-Fi，打开后按提示传输文件", 0,
+        AddControl(context, 5, L"STATIC", L"手机与电脑连接同一 Wi-Fi，扫码即可双向传输文件", 0,
             208, 78, 470, 36, window);
         AddControl(context, 5, L"BUTTON", L"\u6253\u5f00\u5feb\u4f20",
             BS_OWNERDRAW | WS_TABSTOP, 226, 150, 160, 42, window, LanTransferId);

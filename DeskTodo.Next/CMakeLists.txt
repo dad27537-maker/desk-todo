@@ -110,6 +110,13 @@ add_executable(DeskTodoOcrResultSmoke
 target_include_directories(DeskTodoOcrResultSmoke PRIVATE src)
 target_link_libraries(DeskTodoOcrResultSmoke PRIVATE gdi32 user32 kernel32)
 
+add_executable(DeskTodoLanTransferSmoke
+    tests/lan-transfer-smoke.cpp
+    src/Window/LanTransferWindow.cpp)
+target_include_directories(DeskTodoLanTransferSmoke PRIVATE src)
+target_link_libraries(DeskTodoLanTransferSmoke PRIVATE
+    shell32 ole32 uuid gdi32 user32 ws2_32 iphlpapi)
+
 add_executable(DeskTodoBlackHoleSmoke
     tests/black-hole-widget-smoke.cpp
     src/Components/BlackHole/BlackHoleBackground.cpp)
