@@ -10,6 +10,7 @@
 #include "Services/DesktopShellService.h"
 #include "Services/DesktopIconLayoutService.h"
 #include "Services/IconCache.h"
+#include "Services/OleFileMoveCompletion.h"
 #include "Services/LayoutBackupDialog.h"
 #include "Services/ShellIntegrationService.h"
 #include "Window/SettingsWindow.h"
@@ -26,6 +27,7 @@
 #include <shobjidl.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <shldisp.h>
 #include <commctrl.h>
 #include <algorithm>
 #include <cstring>
@@ -128,16 +130,46 @@ public:
     HRESULT STDMETHODCALLTYPE Drop(
         IDataObject* dataObject, DWORD, POINTL point,
         DWORD* effect) override {
+        if (inDrop_) {
+            if (effect) *effect = DROPEFFECT_NONE;
+            return S_FALSE;
+        }
+        struct DropGuard {
+            bool& active;
+            explicit DropGuard(bool& value) : active(value) { active = true; }
+            ~DropGuard() { active = false; }
+        } guard(inDrop_);
         const POINT screenPoint = ToPoint(point);
         const DWORD requested = effect ? *effect : DROPEFFECT_COPY;
+        const DWORD resolved = ResolveEffect(requested, screenPoint);
+        if (resolved == DROPEFFECT_NONE) {
+            if (effect) *effect = DROPEFFECT_NONE;
+            return S_FALSE;
+        }
         std::vector<std::wstring> paths =
             ExtractDroppedPaths(dataObject);
 
-        const bool handled = owner_ && !paths.empty() &&
-            owner_->HandleDroppedPaths(paths, screenPoint);
+        const bool mapped = [&] {
+            const auto hit = owner_->fenceManager->HitTest(screenPoint);
+            const Fence* target = owner_->fenceManager->GetFenceById(hit.fenceId);
+            return target && target->isMappedFolder;
+        }();
+        auto completion = mapped
+            ? OleFileMoveCompletion::Begin(dataObject, paths.size()) : nullptr;
+        bool handled = owner_ && !paths.empty() &&
+            owner_->HandleDroppedPaths(paths, screenPoint, completion);
+        if (completion && !handled) completion->Finish(false);
+        if (completion && !completion->async) {
+            // Keep the source's synchronous Drop alive, but perform all file
+            // I/O on the same worker queue and continue dispatching UI input.
+            // No fence/item pointer crosses this reentrant message pump.
+            handled = completion->WaitWithMessagePump() && handled;
+        }
         if (effect) {
-            *effect = handled
-                ? ResolveEffect(requested, screenPoint)
+            // This target already moves filesystem objects itself. Returning
+            // MOVE asks conventional sources to delete them a second time.
+            *effect = handled && !mapped
+                ? resolved
                 : DROPEFFECT_NONE;
         }
         acceptsFiles_ = false;
@@ -283,14 +315,11 @@ private:
         if (!fence || fence->collapsed) return DROPEFFECT_NONE;
         if (fence->kind == FenceKind::Clock) return DROPEFFECT_NONE;
 
-        const DWORD preferred =
-            fence->isMappedFolder ? DROPEFFECT_MOVE : DROPEFFECT_COPY;
-        if (allowed & preferred) return preferred;
-        if (!fence->isMappedFolder && (allowed & DROPEFFECT_LINK)) {
-            return DROPEFFECT_LINK;
-        }
+        // A mapped view currently implements physical moves only. Logical
+        // grouping preserves the source, so never advertise MOVE for it.
+        if (fence->isMappedFolder) return (allowed & DROPEFFECT_MOVE)
+            ? DROPEFFECT_MOVE : DROPEFFECT_NONE;
         if (allowed & DROPEFFECT_COPY) return DROPEFFECT_COPY;
-        if (allowed & DROPEFFECT_MOVE) return DROPEFFECT_MOVE;
         if (allowed & DROPEFFECT_LINK) return DROPEFFECT_LINK;
         return DROPEFFECT_NONE;
     }
@@ -299,6 +328,7 @@ private:
     LONG references_ = 1;
     DesktopOverlayWindow* owner_ = nullptr;
     bool acceptsFiles_ = false;
+    bool inDrop_ = false;
 };
 
 static bool TryGetOverlayPointer(HWND, POINT& point) {
@@ -397,7 +427,10 @@ DesktopOverlayWindow::~DesktopOverlayWindow() { Destroy(); }
 
 bool DesktopOverlayWindow::Create(HINSTANCE hInst) {
     const auto initialTopology = MonitorService::CaptureTopology();
-    RECT virtualScreen = initialTopology.virtualScreen;
+    // During a dock transition monitor enumeration can fail. A temporary
+    // window size is safe; treating it as a real one-monitor layout is not.
+    RECT virtualScreen = initialTopology.signature.empty()
+        ? MonitorService::GetVirtualScreen() : initialTopology.virtualScreen;
     displayTopologySignature = initialTopology.signature;
     displayTopologySnapshot = initialTopology;
     topologyGeneration = 1;
@@ -449,6 +482,11 @@ bool DesktopOverlayWindow::Create(HINSTANCE hInst) {
 
     renderer.SetIconCache(fenceManager->GetIconCache());
 
+    // Passive raw mouse input observes native Explorer drags even while our
+    // transparent overlay is not the input target. Never consume legacy input.
+    RAWINPUTDEVICE nativeMouse{ 0x01, 0x02, RIDEV_INPUTSINK, hwnd };
+    nativeDesktopInputRegistered = RegisterRawInputDevices(
+        &nativeMouse, 1, sizeof(nativeMouse)) != FALSE;
     DragAcceptFiles(hwnd, TRUE);
     dropTarget = new (std::nothrow) DropTarget(this);
     if (dropTarget) {
@@ -461,7 +499,8 @@ bool DesktopOverlayWindow::Create(HINSTANCE hInst) {
     }
 
     Render();
-    topologyReady = backbufferHasCompleteFrame &&
+    topologyReady = !initialTopology.signature.empty() &&
+        backbufferHasCompleteFrame &&
         !forceFullRedraw &&
         completeFrameGeneration == backbufferGeneration;
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -476,7 +515,8 @@ bool DesktopOverlayWindow::Create(HINSTANCE hInst) {
     CreateTrayIcon(hInst);
     pomodoroWidget->RestoreIfVisible();
     todoWidget->RestoreIfVisible();
-    if (desktopIconLayoutService->Anchors().empty()) {
+    if (!initialTopology.signature.empty() &&
+        desktopIconLayoutService->Anchors().empty()) {
         // Establish the first last-known-good snapshot immediately. Waiting
         // for the periodic timer would leave a short first-run window in which
     // a display disconnect has no ordinary-icon anchors to restore.
@@ -485,6 +525,7 @@ bool DesktopOverlayWindow::Create(HINSTANCE hInst) {
     } else {
         RestoreDesktopIconsAfterTopology(initialTopology);
     }
+    if (initialTopology.signature.empty()) ScheduleDisplayTopologyRefresh();
     // Explorer can rebuild its desktop view after F5 or option changes. Batch
     // reconciliation is cheap enough to run promptly, but is suspended during
     // direct manipulation so Shell COM never stalls a fence drag.
@@ -577,6 +618,20 @@ bool DesktopOverlayWindow::PositionForVirtualScreen(
 }
 
 void DesktopOverlayWindow::Destroy() {
+    KillTimer(hwnd, NATIVE_DESKTOP_CAPTURE_TIMER_ID);
+    if (nativeDesktopInputRegistered) {
+        RAWINPUTDEVICE nativeMouse{ 0x01, 0x02, RIDEV_REMOVE, nullptr };
+        RegisterRawInputDevices(&nativeMouse, 1, sizeof(nativeMouse));
+        nativeDesktopInputRegistered = false;
+    }
+    KillTimer(hwnd, FILE_MOVE_TIMER_ID);
+    // Do not let a filesystem operation outlive the application. Normal close
+    // defers to ProcessFileMoves and keeps pumping messages until it finishes.
+    asyncFileMoves.Wait();
+    for (auto& move : pendingFileMoves) {
+        if (move.oleCompletion) move.oleCompletion->CompleteOne(false);
+    }
+    pendingFileMoves.clear();
     CancelTooltipTimer();
     KillTimer(hwnd, TOOLTIP_GUARD_TIMER_ID);
     CancelItemDrag();
@@ -783,6 +838,10 @@ void DesktopOverlayWindow::ExecuteCommand(const std::wstring& command) {
         return;
     }
     if (command == AppCommand::AutoOrganize) {
+        if (!pendingFileMoves.empty()) {
+            MessageBoxW(hwnd, L"文件移动完成后即可一键整理。", L"DeskTodo", MB_OK);
+            return;
+        }
         int moved = fenceManager->AutoOrganizeDesktop();
         std::wstring msg = L"\u5df2\u6574\u7406 " + std::to_wstring(moved) + L" \u4e2a\u6587\u4ef6\u3002";
         MessageBoxW(hwnd, msg.c_str(), L"DeskTodo \u4e00\u952e\u6574\u7406",
@@ -1026,6 +1085,10 @@ void DesktopOverlayWindow::BackupLayout() {
 }
 
 void DesktopOverlayWindow::RestoreLayout() {
+    if (!pendingFileMoves.empty()) {
+        MessageBoxW(hwnd, L"文件移动完成后即可还原布局。", L"DeskTodo", MB_OK);
+        return;
+    }
     const std::wstring path = LayoutBackupDialog::SelectOpenPath(hwnd);
     if (path.empty()) return;
     const int answer = MessageBoxW(hwnd, L"确定使用最近一次备份覆盖当前布局吗？",
@@ -1039,6 +1102,10 @@ void DesktopOverlayWindow::RestoreLayout() {
 
 bool DesktopOverlayWindow::RequestExit() {
     if (exitInProgress) return true;
+    if (!pendingFileMoves.empty() || fileMoveCompletionActive) {
+        exitAfterFileMoves = true;
+        return false;
+    }
     exitInProgress = true;
     if (!ReleaseAllManagedFilesToDesktop()) {
         exitInProgress = false;
@@ -1254,6 +1321,12 @@ bool DesktopOverlayWindow::ReleaseAllManagedFilesToDesktop() {
 }
 
 void DesktopOverlayWindow::DissolveFence(const std::wstring& fenceId) {
+    for (const auto& move : pendingFileMoves) {
+        if (move.sourceFenceId == fenceId || move.targetFenceId == fenceId) {
+            MessageBoxW(hwnd, L"文件移动完成后即可解除此格子。", L"DeskTodo", MB_OK);
+            return;
+        }
+    }
     Fence* source = fenceManager ? fenceManager->GetFenceById(fenceId) : nullptr;
     if (!source) return;
     Fence snapshot = *source;
@@ -1588,7 +1661,9 @@ void DesktopOverlayWindow::Render() {
 
     bool isMoving = (interactionState == FenceInteractionState::MovingFence);
     bool isDragging = (interactionState == FenceInteractionState::DraggingItem);
-    bool hasLiftedItem = isDragging || interactionState == FenceInteractionState::PressedItem;
+    // A press is still a selection until it crosses the drag threshold.
+    // Keep the source visible until the ghost is actually being drawn.
+    bool hasLiftedItem = isDragging;
 
     // Rendering is read-only. Avoid a deep copy of every path, item and icon
     // rectangle on each mouse move.
@@ -2025,6 +2100,7 @@ void DesktopOverlayWindow::ShowItemTooltip(const std::wstring& fenceId, int item
     Fence* fence = fenceManager->GetFenceById(fenceId);
     if (!fence) return;
     if (itemIndex < 0 || itemIndex >= (int)fence->items.size()) return;
+    if (IsPendingFileMovePath(fence->items[itemIndex].fullPath)) return;
 
     if (!tooltipService) return;
 
@@ -2561,7 +2637,6 @@ bool DesktopOverlayWindow::DropItemToFence(const std::wstring& targetFenceId, PO
 
     DesktopItem* item = fenceManager->GetItem(dragContext.sourceFenceId, dragContext.sourceItemIndex);
     if (!item) return false;
-    const std::wstring itemName = item->name;
     POINT desktopOrigin{};
     const bool hasDesktopOrigin = fenceManager->GetItemDesktopOrigin(
         dragContext.sourceFenceId, item->fullPath, desktopOrigin);
@@ -2589,11 +2664,12 @@ bool DesktopOverlayWindow::DropItemToFence(const std::wstring& targetFenceId, PO
         return added;
     }
 
-    if (fenceManager->IsLogicalItem(dragContext.sourceFenceId, item->fullPath) &&
-        !targetFence->isMappedFolder) {
+    if (!targetFence->isMappedFolder) {
         const std::wstring path = item->fullPath;
-        const bool moved = fenceManager->MoveLogicalItem(
-            dragContext.sourceFenceId, targetFenceId, path);
+        const bool moved = fenceManager->IsLogicalItem(dragContext.sourceFenceId, path)
+            ? fenceManager->MoveLogicalItem(dragContext.sourceFenceId, targetFenceId, path)
+            : fenceManager->AddLogicalItem(targetFenceId, path,
+                hasDesktopOrigin ? desktopOrigin : POINT{ LONG_MIN, LONG_MIN });
         if (moved) {
             fenceManager->ReorderItemAtPoint(targetFenceId, path, pt);
             fenceManager->SaveConfig();
@@ -2602,21 +2678,15 @@ bool DesktopOverlayWindow::DropItemToFence(const std::wstring& targetFenceId, PO
         return moved;
     }
 
-    if (!fileMoveService) return false;
-
-    std::wstring movedPath;
-    bool ok = MovePathWithConflictPrompt(item->fullPath, targetFence->folderPath, &movedPath);
-    if (ok) {
-        RefreshFenceAfterMove(dragContext.sourceFenceId, targetFenceId);
-        const std::wstring movedName = std::filesystem::path(movedPath).filename().wstring();
-        // 跨格子移动后重排序到目标位置
-        fenceManager->ReorderItemAtPoint(targetFenceId, movedName, pt);
-        if (hasDesktopOrigin) {
-            fenceManager->SetItemDesktopOrigin(targetFenceId, movedName, desktopOrigin);
-        }
-        fenceManager->SaveConfig();
-    }
-    return ok;
+    PendingFileMove move;
+    move.request.sourcePath = item->fullPath;
+    move.request.targetDirectory = targetFence->folderPath;
+    move.sourceFenceId = dragContext.sourceFenceId;
+    move.targetFenceId = targetFenceId;
+    move.dropPoint = pt;
+    move.desktopOrigin = desktopOrigin;
+    move.hasDesktopOrigin = hasDesktopOrigin;
+    return QueueFileMove(std::move(move));
 }
 
 bool DesktopOverlayWindow::DropItemToDesktop(POINT pt) {
@@ -2651,24 +2721,203 @@ bool DesktopOverlayWindow::DropItemToDesktop(POINT pt) {
             dragContext.sourceFenceId, itemPath,
             &snappedPoint);
         if (!removed) return false;
+        POINT actual{};
+        if (desktopIconLayoutService &&
+            DesktopShellService::GetPathPositionOnDesktop(itemPath, actual)) {
+            desktopIconLayoutService->RecordUserPlacement(
+                displayTopologySnapshot, itemPath, actual);
+        }
         return true;
     }
 
-    std::wstring movedPath;
-    bool ok = MovePathWithConflictPrompt(item->fullPath, desktopPath, &movedPath);
-    if (ok) {
-        if (!movedPath.empty()) {
-            const int iconSize = (std::max)(1, GridLayoutService::GetRawDesktopIconSize(pt));
-            const POINT desiredTopLeft = GridLayoutService::GetDraggedDesktopIconTopLeft(
-                dragContext.startMouse, dragContext.originalIconRect, pt, iconSize);
-            const POINT snappedPoint = DesktopShellService::SnapPointToDesktopGrid(desiredTopLeft);
-            DesktopShellService::PositionPathOnDesktop(
-                movedPath, snappedPoint);
-        }
-        RefreshFenceAfterMove(dragContext.sourceFenceId, L"");
-        fenceManager->SaveConfig();
+    PendingFileMove move;
+    move.request.sourcePath = itemPath;
+    move.request.targetDirectory = desktopPath;
+    move.sourceFenceId = dragContext.sourceFenceId;
+    move.positionOnDesktop = true;
+    const int iconSize = (std::max)(1, GridLayoutService::GetRawDesktopIconSize(pt));
+    move.dropPoint = GridLayoutService::GetDraggedDesktopIconTopLeft(
+        dragContext.startMouse, dragContext.originalIconRect, pt, iconSize);
+    return QueueFileMove(std::move(move));
+}
+
+bool DesktopOverlayWindow::IsPendingFileMovePath(const std::wstring& path) const {
+    auto keyFor = [](const std::wstring& value) {
+        std::wstring key = std::filesystem::path(value).lexically_normal().wstring();
+        while (key.size() > 3 && (key.back() == L'\\' || key.back() == L'/')) key.pop_back();
+        return key;
+    };
+    const std::wstring key = keyFor(path);
+    for (const auto& pending : pendingFileMoves) {
+        const std::wstring source = keyFor(pending.request.sourcePath);
+        const size_t common = (std::min)(key.size(), source.size());
+        if (_wcsnicmp(key.c_str(), source.c_str(), common) == 0 &&
+            (key.size() == source.size() ||
+             (key.size() > common && key[common] == L'\\') ||
+             (source.size() > common && source[common] == L'\\'))) return true;
     }
-    return ok;
+    return false;
+}
+
+bool DesktopOverlayWindow::QueueFileMove(PendingFileMove move) {
+    if (!hwnd || exitAfterFileMoves || move.request.sourcePath.empty() ||
+        move.request.targetDirectory.empty()) return false;
+    // The Shell already supplied absolute paths. Do not resolve file handles
+    // here: a disconnected mapped share can block the UI just to deduplicate.
+    if (IsPendingFileMovePath(move.request.sourcePath)) return false;
+    if (!move.targetFenceId.empty()) {
+        const auto* target = fenceManager->GetFenceById(move.targetFenceId);
+        if (!target || !target->isMappedFolder) return false;
+        move.targetRect = target->rect;
+        move.targetViewMode = target->viewMode;
+        move.targetScrollOffset = target->scrollOffset;
+        move.targetSearchQuery = target->searchQuery;
+    }
+    move.topologyGeneration = topologyGeneration;
+    if (move.positionOnDesktop) {
+        if (const auto* monitor = MonitorService::FindMonitorForPoint(
+                displayTopologySnapshot, move.dropPoint)) {
+            move.desktopPlacement = MonitorService::CapturePoint96(
+                move.dropPoint, *monitor);
+        }
+    }
+    pendingFileMoves.push_back(std::move(move));
+    if (!SetTimer(hwnd, FILE_MOVE_TIMER_ID, 50, nullptr)) {
+        pendingFileMoves.pop_back();
+        return false;
+    }
+    // Start on the next event-loop turn so the mouse-up/drop callback returns
+    // immediately and releases its drag visual before filesystem work begins.
+    return true;
+}
+
+void DesktopOverlayWindow::ProcessFileMoves() {
+    if (fileMoveCompletionActive || pendingFileMoves.empty()) return;
+    // Completion may rebuild item arrays or show a conflict dialog. Never do
+    // that while another drag still references an item index or old geometry.
+    if (interactionState != FenceInteractionState::None || moveContext.active ||
+        resizeContext.active || displayTopologyDirty ||
+        displayTopologyRefreshPending || !IsWindowEnabled(hwnd)) return;
+    GUITHREADINFO gui{ sizeof(gui) };
+    if (GetGUIThreadInfo(0, &gui) &&
+        (gui.flags & (GUI_INMENUMODE | GUI_POPUPMENUMODE))) return;
+
+    AsyncFileMoveOutcome outcome;
+    if (!asyncFileMoves.IsBusy()) {
+        const auto& next = pendingFileMoves.front();
+        bool targetValid = true;
+        if (!next.targetFenceId.empty()) {
+            const auto* target = fenceManager->GetFenceById(next.targetFenceId);
+            targetValid = target && target->isMappedFolder &&
+                _wcsicmp(std::filesystem::path(target->folderPath).lexically_normal().c_str(),
+                    std::filesystem::path(next.request.targetDirectory).lexically_normal().c_str()) == 0;
+        }
+        if (targetValid && asyncFileMoves.Start(next.request)) return;
+    } else if (!asyncFileMoves.TryTakeResult(outcome)) {
+        return;
+    }
+
+    fileMoveCompletionActive = true;
+    // Copy metadata before any modal dialog: message pumping can append moves.
+    PendingFileMove move = pendingFileMoves.front();
+    if (outcome.result == FileMoveResult::Conflict) {
+        const std::wstring targetPath = (std::filesystem::path(
+            move.request.targetDirectory) /
+            std::filesystem::path(move.request.sourcePath).filename()).wstring();
+        const std::wstring message = L"目标位置已存在同名文件：\n\n" +
+            targetPath + L"\n\n选择“是”覆盖，选择“否”跳过。";
+        const int choice = MessageBoxW(hwnd, message.c_str(),
+            L"DeskTodo - 文件冲突", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+        if (choice == IDYES) {
+            pendingFileMoves.front().request.overwrite = true;
+            fileMoveCompletionActive = false;
+            return;
+        }
+    } else if (outcome.result == FileMoveResult::Success ||
+               outcome.result == FileMoveResult::SameLocation) {
+        if (move.positionOnDesktop && !outcome.movedPath.empty()) {
+            POINT position = move.dropPoint;
+            bool canPosition = !displayTopologyRefreshPending &&
+                move.topologyGeneration == topologyGeneration;
+            if (!displayTopologyRefreshPending && move.desktopPlacement.valid) {
+                const auto* monitor = MonitorService::FindMonitorById(
+                    displayTopologySnapshot, move.desktopPlacement.monitorId);
+                canPosition = monitor != nullptr;
+                if (monitor) position = MonitorService::MaterializePoint96(
+                    move.desktopPlacement, *monitor);
+            }
+            // If the drop monitor went offline during the copy, leave the
+            // new file to Explorer; never apply stale pixels to another panel.
+            if (canPosition && DesktopShellService::PositionPathOnDesktop(
+                    outcome.movedPath, DesktopShellService::SnapPointToDesktopGrid(position))) {
+                POINT actual{};
+                if (desktopIconLayoutService &&
+                    DesktopShellService::GetPathPositionOnDesktop(outcome.movedPath, actual)) {
+                    desktopIconLayoutService->RecordUserPlacement(
+                        displayTopologySnapshot, outcome.movedPath, actual);
+                }
+            }
+        }
+        std::vector<std::wstring> sourceGroups;
+        for (const auto& fence : fenceManager->GetAllFencesRef()) {
+            if (fenceManager->IsLogicalItem(fence.id, move.request.sourcePath)) {
+                sourceGroups.push_back(fence.id);
+            }
+        }
+        for (const auto& sourceId : sourceGroups) {
+            // Settings or a restored layout can replace a source fence during
+            // a copy. Clear membership by the completed path, never by an old
+            // item index or only the original fence ID.
+            fenceManager->RemoveLogicalItem(sourceId, move.request.sourcePath);
+        }
+        const Fence* target = move.targetFenceId.empty() ? nullptr :
+            fenceManager->GetFenceById(move.targetFenceId);
+        const bool sameTarget = target && target->isMappedFolder &&
+            _wcsicmp(std::filesystem::path(target->folderPath).lexically_normal().c_str(),
+                std::filesystem::path(move.request.targetDirectory).lexically_normal().c_str()) == 0;
+        // Queue coordinates describe the old content viewport. If it changed
+        // during a long copy, append using the current order instead of
+        // inserting at an unrelated old screen coordinate.
+        const bool sameViewport = sameTarget &&
+            EqualRect(&target->rect, &move.targetRect) &&
+            target->viewMode == move.targetViewMode &&
+            target->scrollOffset == move.targetScrollOffset &&
+            target->searchQuery == move.targetSearchQuery;
+        RefreshFenceAfterMove(move.sourceFenceId, sameTarget ? move.targetFenceId : L"");
+        if (sameViewport &&
+            move.topologyGeneration == topologyGeneration &&
+            !displayTopologyRefreshPending) {
+            fenceManager->ReorderItemAtPoint(
+                move.targetFenceId, outcome.movedPath, move.dropPoint);
+            if (move.hasDesktopOrigin) fenceManager->SetItemDesktopOrigin(
+                move.targetFenceId, outcome.movedPath, move.desktopOrigin);
+        }
+        fenceManager->SaveConfig();
+    } else if (outcome.result == FileMoveResult::CopyCompletedSourceRetained) {
+        RefreshFenceAfterMove(move.sourceFenceId, move.targetFenceId);
+        const std::wstring message = L"目标已保留完整副本：\n" + outcome.movedPath +
+            L"\n\n原目录有文件未能删除，可能仍被程序占用。请检查原目录和目标目录后再整理；如覆盖了同名目录，旧目录备份也已保留。";
+        MessageBoxW(hwnd, message.c_str(), L"DeskTodo", MB_OK | MB_ICONWARNING);
+    } else {
+        const std::wstring message = L"未能移动：\n" + move.request.sourcePath +
+            L"\n\n请检查目标目录、可用空间或文件占用情况。";
+        MessageBoxW(hwnd, message.c_str(), L"DeskTodo", MB_OK | MB_ICONWARNING);
+    }
+    if (move.oleCompletion) {
+        move.oleCompletion->CompleteOne(
+            outcome.result == FileMoveResult::Success ||
+            outcome.result == FileMoveResult::SameLocation);
+    }
+    pendingFileMoves.pop_front();
+    fileMoveCompletionActive = false;
+    RequestRedraw();
+    if (pendingFileMoves.empty()) {
+        KillTimer(hwnd, FILE_MOVE_TIMER_ID);
+        if (exitAfterFileMoves) {
+            exitAfterFileMoves = false;
+            RequestExit();
+        }
+    }
 }
 
 bool DesktopOverlayWindow::MovePathWithConflictPrompt(const std::wstring& sourcePath,
@@ -2745,7 +2994,8 @@ void DesktopOverlayWindow::OnDropFiles(HDROP hDrop) {
 }
 
 bool DesktopOverlayWindow::HandleDroppedPaths(
-    const std::vector<std::wstring>& paths, POINT pt) {
+    const std::vector<std::wstring>& paths, POINT pt,
+    std::shared_ptr<OleFileMoveCompletion> oleCompletion) {
     if (displayTopologyDirty || paths.empty()) return false;
 
     auto hit = fenceManager->HitTest(pt);
@@ -2761,11 +3011,31 @@ bool DesktopOverlayWindow::HandleDroppedPaths(
     const FenceKind targetKind = targetFence->kind;
     const std::wstring mappedFolderPath = targetFence->folderPath;
 
+    if (mappedFolder) {
+        bool queued = false;
+        for (const auto& sourcePath : paths) {
+            PendingFileMove move;
+            move.request.sourcePath = sourcePath;
+            move.request.targetDirectory = mappedFolderPath;
+            move.targetFenceId = targetFenceId;
+            move.dropPoint = pt;
+            move.oleCompletion = oleCompletion;
+            const bool accepted = QueueFileMove(std::move(move));
+            if (!accepted && oleCompletion) oleCompletion->CompleteOne(false);
+            queued = accepted || queued;
+        }
+        return queued;
+    }
+
     DesktopShellService::BeginNativeDesktopUpdate();
     std::vector<std::wstring> addedNames;
     int failedCount = 0;
     for (const auto& sourcePath : paths) {
         if (sourcePath.empty()) continue;
+        if (IsPendingFileMovePath(sourcePath)) {
+            ++failedCount;
+            continue;
+        }
         POINT originalPosition{};
         const bool fromDesktop =
             IsDesktopFilesystemPath(sourcePath) &&
@@ -2773,20 +3043,10 @@ bool DesktopOverlayWindow::HandleDroppedPaths(
                 sourcePath, originalPosition);
         bool added = false;
         std::wstring addedName = std::filesystem::path(sourcePath).filename().wstring();
-        if (targetFence->isMappedFolder) {
-            // A mapped fence is an actual directory view, so dropping into it
-            // retains the established physical move semantics.
-            std::wstring movedPath;
-            added = MovePathWithConflictPrompt(
-                sourcePath, mappedFolderPath, &movedPath, false);
-            if (added) addedName = std::filesystem::path(movedPath).filename().wstring();
-        } else {
-            // A normal fence is logical grouping only. Keep files, shortcuts,
-            // executables and whole project directories at their source path.
-            added = fenceManager->AddLogicalItem(
-                targetFenceId, sourcePath,
-                fromDesktop ? originalPosition : POINT{ LONG_MIN, LONG_MIN }, true);
-        }
+        // A normal fence groups files without copying directory trees.
+        added = fenceManager->AddLogicalItem(
+            targetFenceId, sourcePath,
+            fromDesktop ? originalPosition : POINT{ LONG_MIN, LONG_MIN }, true);
         if (added) {
             addedNames.push_back(addedName);
         } else {
@@ -2834,6 +3094,7 @@ void DesktopOverlayWindow::ShowItemContextMenu(POINT pt) {
 
     Fence* fence = fenceManager->GetFenceById(itemFenceId);
     if (!fence || itemIdx >= (int)fence->items.size()) return;
+    if (IsPendingFileMovePath(fence->items[itemIdx].fullPath)) return;
 
     const ItemContextMenuResult result = DesktopShellService::ShowItemContextMenu(
         hwnd, fence->items[itemIdx].fullPath, pt);
@@ -2978,6 +3239,8 @@ void DesktopOverlayWindow::RestoreDesktopIconsAfterTopology(
 void DesktopOverlayWindow::SyncStableDesktopIconLayout(
     const MonitorService::DisplayTopologySnapshot& topology) {
     if (!desktopIconLayoutService || displayTopologyDirty ||
+        nativeDesktopMouseDown || nativeDesktopCapturePending ||
+        (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0 ||
         topology.signature.empty() ||
         topology.signature != displayTopologySignature) {
         return;
@@ -2986,9 +3249,69 @@ void DesktopOverlayWindow::SyncStableDesktopIconLayout(
     const auto excludedPaths = CollectLogicalMemberPaths();
     if (desktopIconLayoutService->HasPendingTopologyRecovery()) {
         desktopIconLayoutService->ProcessTopologyRecoveryBatch(6);
-        return;
     }
     desktopIconLayoutService->CaptureStable(topology, excludedPaths);
+}
+
+void DesktopOverlayWindow::ObserveNativeDesktopMouse(const RAWMOUSE& mouse) {
+    POINT point{};
+    if (!GetPhysicalCursorPos(&point)) return;
+    if (mouse.usButtonFlags & RI_MOUSE_LEFT_BUTTON_DOWN) {
+        const HWND target = WindowFromPoint(point);
+        nativeDesktopMouseDown = watchedDesktopIconWindow &&
+            (target == watchedDesktopIconWindow || IsChild(watchedDesktopIconWindow, target));
+        nativeDesktopMouseMoved = false;
+        if (nativeDesktopMouseDown) {
+            nativeDesktopMouseStart = point;
+            nativeDesktopDragTopology = displayTopologySignature;
+        }
+    }
+    if (nativeDesktopMouseDown &&
+        (std::abs(point.x - nativeDesktopMouseStart.x) >= DRAG_START_THRESHOLD ||
+         std::abs(point.y - nativeDesktopMouseStart.y) >= DRAG_START_THRESHOLD)) {
+        nativeDesktopMouseMoved = true;
+    }
+    if (mouse.usButtonFlags & RI_MOUSE_LEFT_BUTTON_UP) {
+        if (nativeDesktopMouseDown && nativeDesktopMouseMoved) {
+            nativeDesktopCapturePending = true;
+            nativeDesktopCaptureAttempts = 0;
+            // Explorer commits its item coordinates after mouse-up. Persist
+            // those actual positions promptly, before a subsequent power-off.
+            SetTimer(hwnd, NATIVE_DESKTOP_CAPTURE_TIMER_ID, 100, nullptr);
+        }
+        nativeDesktopMouseDown = false;
+        nativeDesktopMouseMoved = false;
+    }
+}
+
+void DesktopOverlayWindow::CaptureNativeDesktopDrop() {
+    KillTimer(hwnd, NATIVE_DESKTOP_CAPTURE_TIMER_ID);
+    if (!nativeDesktopCapturePending) return;
+    if (nativeDesktopMouseDown || (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0 ||
+        interactionState != FenceInteractionState::None || displayTopologyDirty) {
+        SetTimer(hwnd, NATIVE_DESKTOP_CAPTURE_TIMER_ID, 100, nullptr);
+        return;
+    }
+    nativeDesktopCapturePending = false;
+    const auto topology = MonitorService::CaptureTopology();
+    // A projected position after unplugging a monitor is not a user drop.
+    if (!desktopIconLayoutService || topology.signature.empty() ||
+        topology.signature != nativeDesktopDragTopology ||
+        topology.signature != displayTopologySignature) return;
+    const auto paths = DesktopShellService::GetSelectedDesktopPaths();
+    bool retry = paths.empty();
+    for (const auto& path : paths) {
+        POINT point{};
+        if (DesktopShellService::IsPathSuppressedOnDesktop(path)) continue;
+        if (!DesktopShellService::GetPathPositionOnDesktop(path, point) ||
+            !desktopIconLayoutService->RecordUserPlacement(topology, path, point)) {
+            retry = true;
+        }
+    }
+    if (retry && ++nativeDesktopCaptureAttempts < 6) {
+        nativeDesktopCapturePending = true;
+        SetTimer(hwnd, NATIVE_DESKTOP_CAPTURE_TIMER_ID, 100, nullptr);
+    }
 }
 
 void DesktopOverlayWindow::ScheduleDisplayTopologyRefresh(bool forceRecovery) {
@@ -3013,6 +3336,7 @@ void DesktopOverlayWindow::RefreshDisplayTopology() {
     // immutable interactionTopology snapshot and the topology transaction is
     // committed after the button is released.
     const bool pointerInteraction =
+        nativeDesktopMouseDown || nativeDesktopCapturePending ||
         moveContext.active || resizeContext.active ||
         interactionState == FenceInteractionState::PressedTitleBar ||
         interactionState == FenceInteractionState::MovingFence ||
@@ -3202,6 +3526,16 @@ LRESULT CALLBACK DesktopOverlayWindow::StaticWndProc(HWND hwnd, UINT msg, WPARAM
 
 LRESULT DesktopOverlayWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+    case WM_INPUT: {
+        RAWINPUT input{};
+        UINT bytes = sizeof(input);
+        const UINT received = GetRawInputData(reinterpret_cast<HRAWINPUT>(lp),
+            RID_INPUT, &input, &bytes, sizeof(RAWINPUTHEADER));
+        if (received != static_cast<UINT>(-1) && input.header.dwType == RIM_TYPEMOUSE) {
+            ObserveNativeDesktopMouse(input.data.mouse);
+        }
+        return DefWindowProc(hwnd, msg, wp, lp);
+    }
     case WM_PAINT: {
         PAINTSTRUCT ps;
         BeginPaint(hwnd, &ps);
@@ -3616,7 +3950,11 @@ LRESULT DesktopOverlayWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_TIMER: {
-        if (wp == TOOLTIP_TIMER_ID) {
+        if (wp == NATIVE_DESKTOP_CAPTURE_TIMER_ID) {
+            CaptureNativeDesktopDrop();
+        } else if (wp == FILE_MOVE_TIMER_ID) {
+            ProcessFileMoves();
+        } else if (wp == TOOLTIP_TIMER_ID) {
             const std::wstring pendingFenceId = tooltipFenceId;
             const int pendingItemIndex = tooltipItemIndex;
             CancelTooltipTimer();
@@ -3667,6 +4005,12 @@ LRESULT DesktopOverlayWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             PlaceInDesktopLayer();
             if (interactionState == FenceInteractionState::None &&
                 !displayTopologyDirty) {
+                if (auto* cache = fenceManager->GetIconCache()) {
+                    if (cache->DrainCompletedIcons()) {
+                        forceFullRedraw = true;
+                        RequestRedraw();
+                    }
+                }
                 EnsureDesktopViewEventHook();
                 DesktopShellService::ReconcileSuppressedDesktopPaths();
                 const ULONGLONG now = GetTickCount64();

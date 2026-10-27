@@ -71,6 +71,7 @@ private:
     int width = 0;
     int height = 0;
     bool frameClipActive = false;
+    RECT frameClipRect{}; // Backbuffer coordinates, including full-frame bounds.
 
     static ID2D1Factory* s_d2dFactory;
     static IDWriteFactory* s_dwriteFactory;
@@ -82,6 +83,9 @@ private:
     static IDWriteTextFormat* s_countFormat;
     static IDWriteTextFormat* s_inputFormat;
     static int s_refCount;
+
+    bool IsVisibleInFrame(RECT screenRect, POINT windowOrigin,
+                          int padding = 0) const;
 
     void DrawLockIconWithAnimation(const Fence& fence, float cx, float cy, float baseSize);
     void DrawViewToggleIcon(float cx, float cy, bool isListMode);

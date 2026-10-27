@@ -69,6 +69,24 @@ target_include_directories(DeskTodoNativeSmoke PRIVATE src)
 target_link_libraries(DeskTodoNativeSmoke PRIVATE
     shell32 shcore ole32 oleaut32 advapi32 user32 kernel32)
 
+add_executable(DeskTodoAsyncFileMoveSmoke
+    tests/async-file-move-smoke.cpp
+    src/Services/AsyncFileMoveService.cpp
+    src/Services/FileMoveService.cpp
+    src/Services/DesktopPathService.cpp)
+target_include_directories(DeskTodoAsyncFileMoveSmoke PRIVATE src)
+target_link_libraries(DeskTodoAsyncFileMoveSmoke PRIVATE
+    shell32 ole32 user32 kernel32)
+
+add_executable(DeskTodoFenceRendererSmoke
+    tests/fence-renderer-smoke.cpp
+    src/Rendering/FenceRenderer.cpp
+    src/Services/GridLayoutService.cpp
+    src/Services/MonitorService.cpp)
+target_include_directories(DeskTodoFenceRendererSmoke PRIVATE src)
+target_link_libraries(DeskTodoFenceRendererSmoke PRIVATE
+    d2d1 dwrite shell32 shcore ole32 gdi32 user32 kernel32)
+
 add_executable(DeskTodoLogicalFenceSmoke
     tests/logical-fence-smoke.cpp
     src/Managers/FenceManager.cpp
@@ -96,6 +114,17 @@ add_executable(DeskTodoDesktopDragProbe
 target_include_directories(DeskTodoDesktopDragProbe PRIVATE src)
 target_link_libraries(DeskTodoDesktopDragProbe PRIVATE
     shell32 comctl32 ole32 oleaut32 user32 kernel32)
+
+add_executable(DeskTodoIconCacheSmoke
+    tests/icon-cache-smoke.cpp
+    src/Services/IconCache.cpp)
+target_include_directories(DeskTodoIconCacheSmoke PRIVATE src)
+target_link_libraries(DeskTodoIconCacheSmoke PRIVATE
+    d2d1 shell32 comctl32 ole32 windowscodecs gdi32 user32 kernel32)
+
+add_executable(DeskTodoOleFileMoveSmoke tests/ole-file-move-smoke.cpp)
+target_include_directories(DeskTodoOleFileMoveSmoke PRIVATE src)
+target_link_libraries(DeskTodoOleFileMoveSmoke PRIVATE ole32 shell32 user32 kernel32)
 
 add_executable(DeskTodoOcrSmoke
     tests/ocr-smoke.cpp

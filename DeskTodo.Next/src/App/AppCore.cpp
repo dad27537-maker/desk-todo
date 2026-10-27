@@ -65,6 +65,9 @@ void AppCore::Run() {
 }
 
 void AppCore::Shutdown() {
+    // WM_QUIT/session teardown can bypass RequestExit's deferred close. Wait
+    // for the owned operation before restoring members from the same paths.
+    if (overlayWindow) overlayWindow->WaitForFileMoves();
     // 退出前恢复逻辑桌面成员的原生图标显示；真实文件路径保持不变。
     if (fenceManager) {
         fenceManager->ReleaseFenceItemsToDesktop();

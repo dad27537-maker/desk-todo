@@ -154,7 +154,12 @@ const MonitorService::MonitorSnapshot* FindAnchorMonitor(
             topology, anchor.placement.monitorId)) {
         return exact;
     }
-    if (!anchor.hasMonitorSnapshot) return nullptr;
+    if (!anchor.hasMonitorSnapshot || topology.monitors.size() < 2) {
+        // A surviving panel can take the removed primary's exact geometry
+        // and primary flag. Geometry alone cannot distinguish that case from
+        // a changed device identity; never overwrite the offline anchor.
+        return nullptr;
+    }
 
     // Prefer an exact geometry/DPI match. It safely recovers the common case
     // where a dock changes the CCD device path but Windows restores the same
@@ -195,8 +200,22 @@ const MonitorService::MonitorSnapshot* FindAnchorMonitor(
 
 }
 
+bool DesktopIconLayoutService::ReadPosition(const std::wstring& path, POINT& point) const {
+    return positionReader_ ? positionReader_(path, point)
+        : DesktopShellService::GetPathPositionOnDesktop(path, point);
+}
+
+bool DesktopIconLayoutService::WritePosition(const std::wstring& path, POINT point) const {
+    return positionWriter_ ? positionWriter_(path, point)
+        : DesktopShellService::TryRestorePathToDesktopPosition(path, point);
+}
+
 bool DesktopIconLayoutService::Load() {
     anchors_.clear();
+    pendingRestoreTargets_.clear();
+    pendingRestoreCursor_ = 0;
+    pendingRestoreRounds_ = 0;
+    unrestoredTargets_.clear();
     const auto statePath = StatePath();
     std::error_code existenceError;
     if (!std::filesystem::exists(statePath, existenceError)) {
@@ -350,8 +369,7 @@ bool DesktopIconLayoutService::CaptureStable(
             }
             ++eligibleCount;
             POINT position{};
-            if (DesktopShellService::GetPathPositionOnDesktop(
-                    item.fullPath, position)) {
+            if (ReadPosition(item.fullPath, position)) {
                 positions.emplace_back(item.fullPath, position);
             }
         }
@@ -378,6 +396,17 @@ bool DesktopIconLayoutService::UpdateFromPositions(
             excluded.find(PathKey(position.first)) != excluded.end()) {
             continue;
         }
+        const std::wstring key = PathKey(position.first);
+        const auto unrestored = unrestoredTargets_.find(key);
+        if (unrestored != unrestoredTargets_.end()) {
+            if (std::abs(position.second.x - unrestored->second.x) > 1 ||
+                std::abs(position.second.y - unrestored->second.y) > 1) {
+                // A failed bounded recovery must not turn Explorer's
+                // temporary projection into the next last-known-good anchor.
+                continue;
+            }
+            unrestoredTargets_.erase(unrestored);
+        }
         const auto* monitor = MonitorService::FindMonitorForPoint(
             topology, position.second);
         if (!monitor) continue;
@@ -385,7 +414,6 @@ bool DesktopIconLayoutService::UpdateFromPositions(
             position.second, *monitor);
         if (!placement.valid) continue;
 
-        const std::wstring key = PathKey(position.first);
         auto existing = std::find_if(
             anchors_.begin(), anchors_.end(),
             [&](const DesktopIconAnchor& anchor) {
@@ -489,6 +517,7 @@ bool DesktopIconLayoutService::BeginTopologyRecovery(
     pendingRestoreTargets_.clear();
     pendingRestoreCursor_ = 0;
     pendingRestoreRounds_ = 0;
+    unrestoredTargets_.clear();
 
     const auto excluded = BuildPathSet(excludedPaths);
     std::vector<std::wstring> offlinePaths;
@@ -526,6 +555,7 @@ bool DesktopIconLayoutService::BeginTopologyRecovery(
         target.path = anchor.path;
         target.point = MonitorService::MaterializePoint96(
             anchor.placement, *monitor);
+        unrestoredTargets_.insert_or_assign(PathKey(target.path), target.point);
         pendingRestoreTargets_.push_back(std::move(target));
     }
 
@@ -545,6 +575,35 @@ bool DesktopIconLayoutService::BeginTopologyRecovery(
     return visibilityReady && saved;
 }
 
+bool DesktopIconLayoutService::RecordUserPlacement(
+    const MonitorService::DisplayTopologySnapshot& topology,
+    const std::wstring& path, POINT physicalPoint) {
+    if (topology.signature.empty() || path.empty()) return false;
+    const auto* monitor = MonitorService::FindMonitorForPoint(topology, physicalPoint);
+    if (!monitor || !IsDesktopFilesystemPath(path) ||
+        GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
+    const auto previousAnchors = anchors_;
+    const auto key = PathKey(path);
+    auto anchor = std::find_if(anchors_.begin(), anchors_.end(),
+        [&](const DesktopIconAnchor& existing) { return PathKey(existing.path) == key; });
+    if (anchor == anchors_.end()) {
+        anchors_.push_back({});
+        anchor = anchors_.end() - 1;
+    }
+    anchor->path = NormalizePathIdentity(path);
+    anchor->placement = MonitorService::CapturePoint96(physicalPoint, *monitor);
+    CaptureMonitorSnapshot(*anchor, *monitor);
+    if (!Save()) {
+        anchors_ = previousAnchors;
+        return false;
+    }
+    unrestoredTargets_.erase(key);
+    for (auto& target : pendingRestoreTargets_) {
+        if (PathKey(target.path) == key) target.completed = true;
+    }
+    return true;
+}
+
 size_t DesktopIconLayoutService::ProcessTopologyRecoveryBatch(
     size_t maximumItems) {
     if (maximumItems == 0 || pendingRestoreTargets_.empty()) return 0;
@@ -552,7 +611,8 @@ size_t DesktopIconLayoutService::ProcessTopologyRecoveryBatch(
     size_t processed = 0;
     while (processed < maximumItems &&
            pendingRestoreCursor_ < pendingRestoreTargets_.size()) {
-        const auto& target = pendingRestoreTargets_[pendingRestoreCursor_++];
+        auto& target = pendingRestoreTargets_[pendingRestoreCursor_++];
+        if (target.completed) continue;
         ++processed;
         if (GetFileAttributesW(target.path.c_str()) ==
                 INVALID_FILE_ATTRIBUTES ||
@@ -562,19 +622,25 @@ size_t DesktopIconLayoutService::ProcessTopologyRecoveryBatch(
 
         POINT current{};
         const bool alreadyPlaced =
-            DesktopShellService::GetPathPositionOnDesktop(
-                target.path, current) &&
+            ReadPosition(target.path, current) &&
             std::abs(current.x - target.point.x) <= 1 &&
             std::abs(current.y - target.point.y) <= 1;
-        if (!alreadyPlaced) {
-            DesktopShellService::TryRestorePathToDesktopPosition(
-                target.path, target.point);
+        const bool restored = alreadyPlaced ||
+            WritePosition(target.path, target.point);
+        if (restored) {
+            target.completed = true;
+            unrestoredTargets_.erase(PathKey(target.path));
+        } else {
+            unrestoredTargets_.insert_or_assign(PathKey(target.path), target.point);
         }
     }
 
     if (pendingRestoreCursor_ >= pendingRestoreTargets_.size()) {
         --pendingRestoreRounds_;
-        if (pendingRestoreRounds_ > 0) {
+        const bool unfinished = std::any_of(
+            pendingRestoreTargets_.begin(), pendingRestoreTargets_.end(),
+            [](const PendingRestoreTarget& target) { return !target.completed; });
+        if (pendingRestoreRounds_ > 0 && unfinished) {
             pendingRestoreCursor_ = 0;
         } else {
             pendingRestoreTargets_.clear();

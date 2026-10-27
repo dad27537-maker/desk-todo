@@ -211,6 +211,7 @@ void FenceRenderer::BeginFrame(const RECT* dirtyRect) {
     frameClipActive = dirtyRect &&
         dirtyRect->right > dirtyRect->left &&
         dirtyRect->bottom > dirtyRect->top;
+    frameClipRect = frameClipActive ? *dirtyRect : RECT{ 0, 0, width, height };
     if (frameClipActive) {
         renderTarget->PushAxisAlignedClip(
             D2D1::RectF(
@@ -223,6 +224,14 @@ void FenceRenderer::BeginFrame(const RECT* dirtyRect) {
         renderTarget->Clear(
             D2D1::ColorF(0, 0, 0, 0));
     }
+}
+
+bool FenceRenderer::IsVisibleInFrame(
+    RECT screenRect, POINT windowOrigin, int padding) const {
+    OffsetRect(&screenRect, -windowOrigin.x, -windowOrigin.y);
+    InflateRect(&screenRect, padding, padding);
+    RECT intersection{};
+    return IntersectRect(&intersection, &screenRect, &frameClipRect) != FALSE;
 }
 
 void FenceRenderer::DrawBlackHoleBackground(const uint8_t* pixels, uint32_t w, uint32_t h) {
@@ -457,7 +466,8 @@ void FenceRenderer::DrawGameFenceCard(const Fence& fence, bool isActive, bool is
     // A game container accepts one launcher. Keep the icon/name renderer, but
     // use the compact card as its viewport instead of the old title-bar card.
     const auto& launcher = fence.items.front();
-    if (!launcher.filtered && !(isDragSource && draggedItemIndex == 0)) {
+    if (!launcher.filtered && !(isDragSource && draggedItemIndex == 0) &&
+        IsVisibleInFrame(launcher.iconRect, windowOrigin, 1)) {
         ID2D1Bitmap* bitmap = iconCache
             ? iconCache->GetOrCreateBitmap(launcher, renderTarget) : nullptr;
         if (bitmap) {
@@ -580,6 +590,9 @@ void FenceRenderer::DrawClockFenceCard(const Fence& fence, bool isActive,
 void FenceRenderer::DrawFence(const Fence& fence, bool isActive, bool isHovered, bool isMoving,
                                bool isDragSource, int draggedItemIndex, POINT windowOrigin) {
     if (!renderTarget) return;
+    // D2D's clip only prevents rasterization. Cull here as well so unrelated
+    // fences do not perform Shell icon extraction during a small dirty redraw.
+    if (!IsVisibleInFrame(fence.rect, windowOrigin, 2)) return;
 
     if (fence.kind == FenceKind::Game) {
         DrawGameFenceCard(fence, isActive, isHovered, isMoving,
@@ -735,16 +748,39 @@ void FenceRenderer::DrawFence(const Fence& fence, bool isActive, bool isHovered,
     } else if (!hasVisible && fence.searchActive && !fence.searchQuery.empty()) {
         DrawNoMatchText(fence, windowOrigin);
     } else {
+        const RECT contentViewport{
+            fence.rect.left + 1,
+            fence.rect.top + FENCE_TITLE_BAR_HEIGHT +
+                (fence.searchActive ? 36 : 0),
+            fence.rect.right - 1,
+            fence.rect.bottom - 1
+        };
         for (size_t i = 0; i < fence.items.size(); ++i) {
             const auto& item = fence.items[i];
             if (item.filtered) continue; // 跳过被搜索过滤的项
+
+            // Include text and selection bounds: list rows can remain visible
+            // even when their icon is outside the dirty rectangle. Intersect
+            // the viewport before requesting a bitmap; a D2D clip alone still
+            // loads every offscreen icon in a large mapped directory.
+            RECT itemBounds{};
+            UnionRect(&itemBounds, &item.iconRect, &item.textRect);
+            UnionRect(&itemBounds, &itemBounds, &item.hitRect);
+            InflateRect(&itemBounds, 2, 2);
+            RECT visibleBounds{};
+            if (!IntersectRect(&visibleBounds, &itemBounds, &contentViewport) ||
+                !IsVisibleInFrame(visibleBounds, windowOrigin)) continue;
 
             float opacity = 1.0f;
             if (isDragSource && (int)i == draggedItemIndex) {
                 opacity = 0.0f;
             }
 
-            ID2D1Bitmap* bmp = iconCache
+            RECT visibleIcon{};
+            const bool drawIcon = opacity > 0.0f &&
+                IntersectRect(&visibleIcon, &item.iconRect, &contentViewport) &&
+                IsVisibleInFrame(visibleIcon, windowOrigin, 1);
+            ID2D1Bitmap* bmp = iconCache && drawIcon
                 ? iconCache->GetOrCreateBitmap(item, renderTarget)
                 : nullptr;
             DrawItem(item, bmp, windowOrigin, opacity);
