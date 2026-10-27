@@ -6,15 +6,34 @@
 
 #pragma comment(lib, "windowscodecs.lib")
 
-IconCache::IconCache() {}
-IconCache::~IconCache() { ClearAll(); }
+IconCache::IconCache(IconLoader iconLoader) : loader(iconLoader) {}
+IconCache::~IconCache() { Shutdown(); }
 
 void IconCache::Initialize() {
+    if (initialized) return;
     defaultIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    stopping = false;
+    initialized = true;
+    try {
+        worker = std::thread(&IconCache::RunWorker, this);
+    } catch (...) {
+        // A thread resource failure must not send Shell work back to the UI.
+        stopping = true;
+    }
 }
 
 void IconCache::Shutdown() {
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        stopping = true;
+        requests.clear();
+    }
+    queueReady.notify_one();
+    if (worker.joinable()) worker.join();
     ClearAll();
+    initialized = false;
+    // LoadIcon without LR_COPYFROMRESOURCE returns a shared system handle.
+    defaultIcon = nullptr;
 }
 
 std::wstring IconCache::GetCacheKey(const DesktopItem& item) const {
@@ -24,24 +43,90 @@ std::wstring IconCache::GetCacheKey(const DesktopItem& item) const {
 }
 
 HICON IconCache::GetIcon(const DesktopItem& item) {
+    if (!initialized) Initialize();
     std::wstring key = GetCacheKey(item);
     if (key.empty()) {
-        if (!defaultIcon) defaultIcon = LoadIcon(nullptr, IDI_APPLICATION);
         return defaultIcon;
     }
 
     auto it = iconMap.find(key);
-    if (it != iconMap.end()) return it->second;
+    if (it != iconMap.end()) return it->second ? it->second : defaultIcon;
 
-    HICON hIcon = item.fullPath.empty() ? nullptr : ExtractIconForPath(item.fullPath);
-    if (!hIcon && !item.ext.empty()) {
-        hIcon = ExtractIconForExt(item.ext);
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        if (!stopping && pendingKeys.insert(key).second) {
+            requests.push_back({key, item.fullPath, item.ext, generation});
+            queueReady.notify_one();
+        }
     }
-    if (!hIcon) {
-        hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    return defaultIcon;
+}
+
+void IconCache::RunWorker() {
+    const HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    for (;;) {
+        IconRequest request;
+        {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            queueReady.wait(lock, [&] { return stopping || !requests.empty(); });
+            if (stopping) break;
+            request = std::move(requests.front());
+            requests.pop_front();
+        }
+        HICON icon = nullptr;
+        try {
+            if (SUCCEEDED(comResult)) {
+                if (loader) {
+                    icon = loader(request.path, request.ext);
+                } else {
+                    if (!request.path.empty()) icon = ExtractIconForPath(request.path);
+                    if (!icon && !request.ext.empty()) icon = ExtractIconForExt(request.ext);
+                }
+            }
+        } catch (...) {
+            // A failed extraction is cached as a default icon, not retried on
+            // every frame. No exception may escape the background thread.
+        }
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            if (!stopping && request.generation == generation) {
+                completed.push_back({std::move(request.key), icon, request.generation});
+                icon = nullptr;
+            }
+        }
+        if (icon) DestroyIcon(icon);
     }
-    iconMap[key] = hIcon;
-    return hIcon;
+    if (SUCCEEDED(comResult)) CoUninitialize();
+}
+
+bool IconCache::DrainCompletedIcons() {
+    std::deque<IconResult> ready;
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        ready.swap(completed);
+        for (const auto& result : ready) pendingKeys.erase(result.key);
+    }
+    bool changed = false;
+    for (auto& result : ready) {
+        // ClearAll and adoption both run on the UI thread. The worker only
+        // publishes handles; it never touches maps, D2D resources or models.
+        if (result.generation != generation) {
+            if (result.icon) DestroyIcon(result.icon);
+            continue;
+        }
+        auto previous = iconMap.find(result.key);
+        if (previous != iconMap.end() && previous->second) DestroyIcon(previous->second);
+        iconMap[result.key] = result.icon;
+        if (result.icon) {
+            auto bitmap = bitmapCache.find(result.key);
+            if (bitmap != bitmapCache.end()) {
+                if (bitmap->second) bitmap->second->Release();
+                bitmapCache.erase(bitmap);
+            }
+            changed = true;
+        }
+    }
+    return changed;
 }
 
 ID2D1Bitmap* IconCache::GetOrCreateBitmap(const DesktopItem& item, ID2D1RenderTarget* rt) {
@@ -79,12 +164,21 @@ void IconCache::ClearBitmaps() {
 }
 
 void IconCache::ClearAll() {
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        ++generation;
+        requests.clear();
+        pendingKeys.clear();
+        for (const auto& result : completed) {
+            if (result.icon) DestroyIcon(result.icon);
+        }
+        completed.clear();
+    }
     ClearBitmaps();
     for (auto& pair : iconMap) {
         if (pair.second) DestroyIcon(pair.second);
     }
     iconMap.clear();
-    if (defaultIcon) { DestroyIcon(defaultIcon); defaultIcon = nullptr; }
 }
 
 HICON IconCache::ExtractIconForExt(const std::wstring& ext) {

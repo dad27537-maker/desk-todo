@@ -934,6 +934,32 @@ bool DesktopShellService::GetPathPositionOnDesktop(const std::wstring& path,
     return true;
 }
 
+std::vector<std::wstring> DesktopShellService::GetSelectedDesktopPaths() {
+    std::vector<std::wstring> paths;
+    ComPtr<IFolderView> view;
+    HWND window = nullptr;
+    ComPtr<IShellFolder> folder;
+    ComPtr<IEnumIDList> selection;
+    if (!TryGetDesktopFolderView(view, window) || !view ||
+        FAILED(view->GetFolder(IID_PPV_ARGS(&folder))) ||
+        FAILED(view->Items(SVGIO_SELECTION, IID_PPV_ARGS(&selection))) ||
+        !selection) return paths;
+    PITEMID_CHILD child = nullptr;
+    while (selection->Next(1, &child, nullptr) == S_OK) {
+        ComPtr<IShellItem> item;
+        PWSTR path = nullptr;
+        if (SUCCEEDED(SHCreateItemWithParent(nullptr, folder.Get(), child,
+                IID_PPV_ARGS(&item))) &&
+            SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
+            paths.emplace_back(path);
+        }
+        if (path) CoTaskMemFree(path);
+        CoTaskMemFree(child);
+        child = nullptr;
+    }
+    return paths;
+}
+
 HWND DesktopShellService::GetNativeDesktopIconWindow() {
     ComPtr<IFolderView> folderView;
     HWND listView = nullptr;
@@ -1211,17 +1237,20 @@ bool DesktopShellService::ReconcileSuppressedDesktopPaths() {
     // Reconcile by exact PIDL and park only members that are currently visible.
     // This is intentionally idempotent: a parked member is already outside the
     // viewport on the next timer tick, so the desktop is not refreshed forever.
+    bool changed = false;
     for (const auto& path : paths) {
         if (IsPathVisibleInDesktopView(folderView.Get(), listView, path)) {
-            HidePathFromDesktopView(folderView.Get(), listView, path);
+            changed = HidePathFromDesktopView(
+                folderView.Get(), listView, path) || changed;
         }
     }
 
-    if (listView && IsWindow(listView)) {
-        RedrawWindow(
-            listView, nullptr, nullptr,
-            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN |
-            RDW_UPDATENOW | RDW_ERASENOW);
+    if (changed && listView && IsWindow(listView)) {
+        // Let Explorer paint on its own thread. Repeated synchronous erase
+        // passes during the idle reconciliation timer flash the entire desktop
+        // and can stall our input thread even when nothing has changed.
+        RedrawWindow(listView, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_ALLCHILDREN);
     }
     return filterInstalled;
 }
@@ -1300,6 +1329,12 @@ std::wstring DesktopShellService::DiagnoseDesktopView(const std::wstring& path) 
            << L" position-relative-hr=0x" << static_cast<unsigned long>(positionHr)
            << L" view-filter-site-hr=0x" << static_cast<unsigned long>(viewFilterHr)
            << L" shell-filter-site-hr=0x" << static_cast<unsigned long>(shellFilterHr);
+    if (SUCCEEDED(positionHr)) {
+        POINT origin{};
+        ClientToScreen(listView, &origin);
+        output << std::dec << L" raw-position=" << itemPosition.x << L"," << itemPosition.y
+               << L" view-origin=" << origin.x << L"," << origin.y;
+    }
     return output.str();
 }
 

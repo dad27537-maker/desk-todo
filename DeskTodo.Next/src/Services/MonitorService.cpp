@@ -306,10 +306,19 @@ void ApplyFenceBounds(
     RECT& rect, const DisplayTopologySnapshot& topology) {
     RECT workArea = GetPrimaryWorkArea();
     const MonitorSnapshot* nearest = nullptr;
+    long long greatestOverlap = 0;
     long long nearestDistance = (std::numeric_limits<long long>::max)();
 
     for (const auto& monitor : topology.monitors) {
         const RECT& bounds = monitor.monitorRect;
+        const LONG overlapWidth = (std::max)(0L,
+            (std::min)(rect.right, bounds.right) -
+            (std::max)(rect.left, bounds.left));
+        const LONG overlapHeight = (std::max)(0L,
+            (std::min)(rect.bottom, bounds.bottom) -
+            (std::max)(rect.top, bounds.top));
+        const long long overlap =
+            static_cast<long long>(overlapWidth) * overlapHeight;
         const long long dx = rect.right < bounds.left
             ? static_cast<long long>(bounds.left) - rect.right
             : rect.left > bounds.right
@@ -321,8 +330,13 @@ void ApplyFenceBounds(
                 ? static_cast<long long>(rect.top) - bounds.bottom
                 : 0;
         const long long distance = dx * dx + dy * dy;
-        if (!nearest || distance < nearestDistance) {
+        // Match MonitorFromRect: the largest intersection owns a rectangle
+        // spanning panels. Distance is only meaningful when none intersect;
+        // every intersecting monitor otherwise has a zero distance tie.
+        if (!nearest || overlap > greatestOverlap ||
+            (overlap == 0 && greatestOverlap == 0 && distance < nearestDistance)) {
             nearest = &monitor;
+            greatestOverlap = overlap;
             nearestDistance = distance;
         }
     }
@@ -349,17 +363,22 @@ DisplayTopologySnapshot CaptureTopology() {
     const std::vector<CcdMonitorIdentity> identities =
         CaptureCcdMonitorIdentities();
     MonitorEnumerationContext context{ &identities, &topology.monitors };
-    EnumDisplayMonitors(nullptr, nullptr, CaptureMonitorSnapshot,
-                        reinterpret_cast<LPARAM>(&context));
+    if (!EnumDisplayMonitors(nullptr, nullptr, CaptureMonitorSnapshot,
+                             reinterpret_cast<LPARAM>(&context)) ||
+        topology.monitors.empty()) {
+        // A failed enumeration during hot-plug is not a real one-screen
+        // topology. Leave it uncommitted and let the caller retry instead of
+        // migrating saved anchors to a fabricated primary monitor.
+        return {};
+    }
 
-    if (topology.monitors.empty()) {
-        MonitorSnapshot fallback;
-        fallback.stableId = L"gdi:primary";
-        fallback.gdiDeviceName = L"Primary";
-        fallback.monitorRect = topology.virtualScreen;
-        fallback.workArea = GetPrimaryWorkArea();
-        fallback.primary = true;
-        topology.monitors.push_back(std::move(fallback));
+    // Derive the virtual bounds from the same enumeration as the panels.
+    // GetSystemMetrics above may belong to an earlier hot-plug generation.
+    topology.virtualScreen = topology.monitors.front().monitorRect;
+    for (const auto& monitor : topology.monitors) {
+        RECT bounds{};
+        UnionRect(&bounds, &topology.virtualScreen, &monitor.monitorRect);
+        topology.virtualScreen = bounds;
     }
 
     std::sort(topology.monitors.begin(), topology.monitors.end(),
@@ -370,6 +389,9 @@ DisplayTopologySnapshot CaptureTopology() {
 
 std::wstring BuildTopologySignature(
     const DisplayTopologySnapshot& topology) {
+    if (topology.monitors.empty() || IsRectEmpty(&topology.virtualScreen)) {
+        return {};
+    }
     std::vector<MonitorSnapshot> sorted = topology.monitors;
     // This signature represents the coordinate space used for layout and
     // rendering, not the transient identity source returned by

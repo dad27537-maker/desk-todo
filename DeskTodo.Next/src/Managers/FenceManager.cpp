@@ -140,7 +140,11 @@ bool IsSafeReconnectMonitorMatch(
     const MonitorService::DisplayTopologySnapshot& topology,
     const RECT& rect,
     const MonitorService::MonitorSnapshot* monitor) {
-    if (!monitor) return false;
+    // After the primary display is unplugged Windows can move the surviving
+    // display to (0,0). Geometric overlap then identifies the wrong panel,
+    // even when the old fence is completely inside its new work area. Keep
+    // the missing identity until a multi-monitor layout returns.
+    if (!monitor || topology.monitors.size() < 2) return false;
     if (IsStrongMonitorMatch(rect, *monitor)) return true;
 
     // Do not project an offline secondary fence onto the only remaining

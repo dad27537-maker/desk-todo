@@ -400,6 +400,25 @@ int wmain(int argc, wchar_t** argv) {
             EqualRect(&topologyFence->rect, &expectedReconnectedRect);
     }
 
+    bool removedPrimaryAnchorPreserved = false;
+    topologyFence = reloaded.GetFenceById(sourceFence);
+    if (topologyFence) {
+        const Fence savedFence = *topologyFence;
+        topologyFence->rect = { 100, 80, 420, 320 };
+        topologyFence->monitorPlacement = {
+            L"removed-primary-device", 100, 80, 320, 240, 240, true
+        };
+        topologyFence->monitorOnline = true;
+        const RECT removedPrimaryRect = topologyFence->rect;
+        reloaded.ApplyDisplayTopology(primaryOnlyTopology);
+        topologyFence = reloaded.GetFenceById(sourceFence);
+        removedPrimaryAnchorPreserved = topologyFence &&
+            !topologyFence->monitorOnline &&
+            topologyFence->monitorPlacement.monitorId == L"removed-primary-device" &&
+            EqualRect(&topologyFence->rect, &removedPrimaryRect);
+        if (topologyFence) *topologyFence = savedFence;
+    }
+
     const fs::path projectFolder = desktop / L"Project";
     fs::create_directories(projectFolder, error);
     { std::ofstream stream(projectFolder / L"visible.txt", std::ios::binary);
@@ -551,7 +570,7 @@ int wmain(int argc, wchar_t** argv) {
         offlineItemOriginIsDeferred && offlineAnchorSurvivesFenceMove &&
         reconnectRestoresItemOrigin &&
         reconnectRestoresRelativePlacement && oneSourceAfterOrganize &&
-        replacementMonitorRecovered &&
+        replacementMonitorRecovered && removedPrimaryAnchorPreserved &&
         releasedOnExit && legacyHiddenAttributesCleared &&
         corruptManagerPreserved && shortcutCount == 0;
     std::wcout << L"logical fence locked-file smoke: " << (ok ? L"PASS" : L"FAIL")
@@ -574,6 +593,7 @@ int wmain(int argc, wchar_t** argv) {
                    offlineAnchorSurvivesFenceMove &&
                    reconnectRestoresItemOrigin)
                << L", monitor-id-recovery=" << replacementMonitorRecovered
+               << L", removed-primary-anchor=" << removedPrimaryAnchorPreserved
                << L", logical-organize=" << oneSourceAfterOrganize
                << L", exit-restored=" << releasedOnExit
                << L", legacy-hidden-cleared=" << legacyHiddenAttributesCleared

@@ -16,6 +16,35 @@ std::wstring MakeTemporarySibling(const std::wstring& targetPath, const wchar_t*
            std::to_wstring(GetTickCount64());
 }
 
+bool ResolveContainmentPath(const std::wstring& value,
+                            std::filesystem::path& resolved) {
+    std::error_code error;
+    resolved = std::filesystem::weakly_canonical(value, error);
+    if (!error) return true;
+
+    // Some restricted Windows sessions permit ordinary file moves but deny
+    // the metadata handle used by weakly_canonical. Lexical normalization is
+    // sufficient only when no existing path component redirects elsewhere.
+    error.clear();
+    resolved = std::filesystem::absolute(value, error).lexically_normal();
+    if (error) return false;
+    std::filesystem::path prefix = resolved.root_path();
+    auto isUnredirected = [](const std::filesystem::path& path) {
+        const DWORD attributes = GetFileAttributesW(path.c_str());
+        if (attributes != INVALID_FILE_ATTRIBUTES) {
+            return (attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+        }
+        const DWORD failure = GetLastError();
+        return failure == ERROR_FILE_NOT_FOUND || failure == ERROR_PATH_NOT_FOUND;
+    };
+    if (!isUnredirected(prefix)) return false;
+    for (const auto& part : resolved.relative_path()) {
+        prefix /= part;
+        if (!isUnredirected(prefix)) return false;
+    }
+    return true;
+}
+
 }
 
 FileMoveResult FileMoveService::MoveToDirectory(const std::wstring& sourcePath,
@@ -29,6 +58,25 @@ FileMoveResult FileMoveService::MoveToDirectory(const std::wstring& sourcePath,
         if (!std::filesystem::exists(sourcePath)) return FileMoveResult::Failed;
 
         std::error_code ec;
+        if (std::filesystem::is_directory(sourcePath, ec)) {
+            std::filesystem::path source;
+            std::filesystem::path target;
+            if (!ResolveContainmentPath(sourcePath, source) ||
+                !ResolveContainmentPath(targetDirectory, target)) {
+                return FileMoveResult::Failed;
+            }
+            auto sourcePart = source.begin();
+            auto targetPart = target.begin();
+            while (sourcePart != source.end() && targetPart != target.end() &&
+                   _wcsicmp(sourcePart->c_str(), targetPart->c_str()) == 0) {
+                ++sourcePart;
+                ++targetPart;
+            }
+            // A folder dropped onto itself or a descendant must never enter
+            // the recursive copy fallback (which could copy into itself).
+            if (sourcePart == source.end()) return FileMoveResult::Failed;
+        }
+        ec.clear();
         std::filesystem::create_directories(targetDirectory, ec);
         if (ec) return FileMoveResult::Failed;
 
@@ -82,6 +130,22 @@ FileMoveResult FileMoveService::MoveToDirectory(const std::wstring& sourcePath,
                 MoveFileExW(stagingPath.c_str(), targetPath.c_str(), MOVEFILE_WRITE_THROUGH)) {
                 if (RemovePath(sourcePath)) {
                     completed = true;
+                } else if (sourceAttributes != INVALID_FILE_ATTRIBUTES &&
+                           (sourceAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+                    // remove_all is not transactional: a locked child can
+                    // fail after other source files have already been deleted.
+                    // Keep the complete destination and any overwrite backup;
+                    // rolling it back here could destroy the only remaining
+                    // copy of the successfully removed source children.
+                    if (movedPath) *movedPath = targetPath;
+                    SHChangeNotify(SHCNE_MKDIR, SHCNF_PATHW | SHCNF_FLUSHNOWAIT,
+                                   targetPath.c_str(), nullptr);
+                    const std::wstring sourceParent = source.parent_path().wstring();
+                    SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW | SHCNF_FLUSHNOWAIT,
+                                   sourceParent.c_str(), nullptr);
+                    SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW | SHCNF_FLUSHNOWAIT,
+                                   targetDirectory.c_str(), nullptr);
+                    return FileMoveResult::CopyCompletedSourceRetained;
                 } else {
                     RemovePath(targetPath);
                 }

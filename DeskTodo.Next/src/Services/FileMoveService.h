@@ -7,6 +7,9 @@ enum class FileMoveResult {
     Success,
     SameLocation,
     Conflict,
+    // A complete destination copy is retained because recursive source
+    // cleanup failed and may already have removed some source children.
+    CopyCompletedSourceRetained,
     Failed
 };
 

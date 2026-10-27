@@ -41,8 +41,13 @@ Thumbs.db
 
 # Test artifacts
 *.png
+!DeskTodo.Next/src/assets/desktodo-icon.png
+!DeskTodo.Next/tests/fixtures/ocr-small-chinese.png
 *.jpg
 
 # Logs
 crashdumps/
 *.log
+
+# Downloaded OCR SDKs, runtime libraries, and model weights
+DeskTodo.Next/deps/ocr/
