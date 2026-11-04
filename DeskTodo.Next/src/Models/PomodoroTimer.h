@@ -1,4 +1,7 @@
 #pragma once
+#include <algorithm>
+#include <cstdint>
+#include <limits>
 
 struct PomodoroTimerState {
     int remainingSeconds = 25 * 60;
@@ -28,10 +31,32 @@ inline bool Tick(PomodoroTimerState& state) {
         return false;
     }
 
-    if (state.focusPhase) ++state.completedFocusSessions;
+    if (state.focusPhase && state.completedFocusSessions < (std::numeric_limits<int>::max)()) ++state.completedFocusSessions;
     state.focusPhase = !state.focusPhase;
     state.remainingSeconds = PhaseDuration(state);
     return true;
+}
+
+inline bool Advance(PomodoroTimerState& state, uint64_t seconds) {
+    if (!state.running || !seconds) return false;
+    bool changed = false;
+    // Reduce whole cycles first, so waking from sleep never loops per second.
+    const uint64_t cycles = seconds / (FocusSeconds + BreakSeconds);
+    if (cycles) {
+        state.completedFocusSessions = static_cast<int>((std::min)(
+            uint64_t{(std::numeric_limits<int>::max)()},
+            static_cast<uint64_t>((std::max)(0, state.completedFocusSessions)) + cycles));
+        seconds %= FocusSeconds + BreakSeconds;
+        changed = true;
+    }
+    while (seconds >= static_cast<uint64_t>((std::max)(1, state.remainingSeconds))) {
+        seconds -= (std::max)(1, state.remainingSeconds);
+        state.remainingSeconds = 1;
+        Tick(state);
+        changed = true;
+    }
+    state.remainingSeconds -= static_cast<int>(seconds);
+    return changed;
 }
 
 }

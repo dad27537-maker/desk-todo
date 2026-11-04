@@ -114,7 +114,8 @@ FileMoveResult FileMoveService::MoveToDirectory(const std::wstring& sourcePath,
 
         auto restoreTargetBackup = [&]() {
             if (backupPath.empty() || !std::filesystem::exists(backupPath)) return;
-            RemovePath(targetPath);
+            // A new file may have appeared while the move was in progress.
+            // Never delete it to make room; preserve our backup on conflict.
             MoveFileExW(backupPath.c_str(), targetPath.c_str(), MOVEFILE_WRITE_THROUGH);
         };
 
@@ -125,7 +126,19 @@ FileMoveResult FileMoveService::MoveToDirectory(const std::wstring& sourcePath,
         }
         // 同卷原子重命名失败（文件夹被占用等）或跨卷 → fallback 到 copy+delete
         if (!completed) {
-            const std::wstring stagingPath = MakeTemporarySibling(targetPath, L".desktodo-copying-");
+            std::wstring stagingDirectory;
+            for (unsigned attempt = 0; attempt < 100; ++attempt) {
+                const auto candidate = MakeTemporarySibling(targetPath, L".desktodo-copying-") +
+                    L"-" + std::to_wstring(attempt);
+                std::error_code error;
+                if (std::filesystem::create_directory(candidate, error)) {
+                    stagingDirectory = candidate;
+                    break;
+                }
+                if (error && error != std::errc::file_exists) break;
+            }
+            if (stagingDirectory.empty()) { restoreTargetBackup(); return FileMoveResult::Failed; }
+            const std::wstring stagingPath = (std::filesystem::path(stagingDirectory) / L"content").wstring();
             if (CopyPath(sourcePath, stagingPath) &&
                 MoveFileExW(stagingPath.c_str(), targetPath.c_str(), MOVEFILE_WRITE_THROUGH)) {
                 if (RemovePath(sourcePath)) {
@@ -138,6 +151,7 @@ FileMoveResult FileMoveService::MoveToDirectory(const std::wstring& sourcePath,
                     // rolling it back here could destroy the only remaining
                     // copy of the successfully removed source children.
                     if (movedPath) *movedPath = targetPath;
+                    RemovePath(stagingDirectory);
                     SHChangeNotify(SHCNE_MKDIR, SHCNF_PATHW | SHCNF_FLUSHNOWAIT,
                                    targetPath.c_str(), nullptr);
                     const std::wstring sourceParent = source.parent_path().wstring();
@@ -152,6 +166,7 @@ FileMoveResult FileMoveService::MoveToDirectory(const std::wstring& sourcePath,
             } else {
                 RemovePath(stagingPath);
             }
+            RemovePath(stagingDirectory);
         }
 
         if (!completed) {
@@ -189,10 +204,14 @@ bool FileMoveService::CreateNameReservation(const std::wstring& path, bool direc
         SetFileAttributesW((std::filesystem::path(path) / DirectoryMarker).c_str(),
                            FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
     } else {
-        std::ofstream marker(path, std::ios::binary | std::ios::trunc);
-        marker.write(ReservationMarker, sizeof(ReservationMarker) - 1);
-        marker.close();
-        if (!marker) { std::filesystem::remove(path, ec); return false; }
+        HANDLE marker = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+            CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (marker == INVALID_HANDLE_VALUE) return false;
+        DWORD written = 0;
+        const bool saved = WriteFile(marker, ReservationMarker, sizeof(ReservationMarker) - 1,
+            &written, nullptr) && written == sizeof(ReservationMarker) - 1;
+        const bool closed = CloseHandle(marker) != FALSE;
+        if (!saved || !closed) { DeleteFileW(path.c_str()); return false; }
     }
     if (!SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) {
         RemovePath(path);
@@ -241,7 +260,17 @@ bool FileMoveService::IsNameReservation(const std::wstring& path) const {
     std::error_code ec;
     if (!std::filesystem::exists(path, ec) || ec) return false;
     std::filesystem::path markerPath(path);
-    if (std::filesystem::is_directory(path, ec)) markerPath /= DirectoryMarker;
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) return false;
+    if (std::filesystem::is_directory(path, ec)) {
+        markerPath /= DirectoryMarker;
+        std::filesystem::directory_iterator cursor(path, ec), end;
+        if (ec) return false;
+        for (; cursor != end; cursor.increment(ec)) {
+            if (ec || cursor->path().filename() != DirectoryMarker) return false;
+        }
+        if (ec) return false;
+    }
     if (ec || !std::filesystem::is_regular_file(markerPath, ec) || ec) return false;
     std::ifstream marker(markerPath, std::ios::binary);
     std::string value(sizeof(ReservationMarker) - 1, '\0');

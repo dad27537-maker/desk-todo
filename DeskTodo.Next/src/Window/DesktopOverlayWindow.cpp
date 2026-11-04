@@ -3915,12 +3915,13 @@ LRESULT DesktopOverlayWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         if (!data || data->dwData != 1 || !data->lpData || data->cbData < sizeof(wchar_t)) {
             return FALSE;
         }
-        const auto* command = static_cast<const wchar_t*>(data->lpData);
-        if (_wcsicmp(command, AppCommand::Show) == 0) {
+        std::wstring command;
+        if (!AppCommand::DecodeForwardedCommand(data->lpData, data->cbData, command)) return FALSE;
+        if (_wcsicmp(command.c_str(), AppCommand::Show) == 0) {
             PostMessageW(hwnd, WM_DESKTODO_ASYNC_SHOW, 0, 0);
             return TRUE;
         }
-        if (_wcsicmp(command, AppCommand::Settings) == 0) {
+        if (_wcsicmp(command.c_str(), AppCommand::Settings) == 0) {
             PostMessageW(hwnd, WM_DESKTODO_ASYNC_SETTINGS, 0, 0);
             return TRUE;
         }

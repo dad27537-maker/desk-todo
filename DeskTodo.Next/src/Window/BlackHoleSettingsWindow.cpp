@@ -323,7 +323,9 @@ BlackHole::Settings Load() {
     for (size_t i = 0; i < v.size(); ++i) {
         DWORD type = 0;
         DWORD bytes = sizeof(float);
-        RegQueryValueExW(key, ValueNames[i], nullptr, &type, reinterpret_cast<BYTE*>(&v[i]), &bytes);
+        float value = v[i];
+        if (RegQueryValueExW(key, ValueNames[i], nullptr, &type, reinterpret_cast<BYTE*>(&value), &bytes) == ERROR_SUCCESS &&
+            type == REG_BINARY && bytes == sizeof(float)) v[i] = value;
     }
     RegCloseKey(key);
     FromArray(s, v);
@@ -390,6 +392,7 @@ void Show(HWND owner) {
         nullptr,
         wc.hInstance,
         c);
+    if (!w) { EnableWindow(owner, TRUE); delete c; return; }
     SetWindowPos(w, HWND_TOP, placement.rect.left, placement.rect.top,
         placement.rect.right - placement.rect.left,
         placement.rect.bottom - placement.rect.top,

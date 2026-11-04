@@ -6,6 +6,7 @@
 #include "Window/BlackHoleSettingsWindow.h"
 #include "Window/SettingsWindowLayout.h"
 #include "Window/ScreenshotTool.h"
+#include "Utils/LaunchArguments.h"
 
 #include <commctrl.h>
 #include <shellapi.h>
@@ -145,7 +146,7 @@ void UpdateScrollRange(HWND window, Context* context) {
     SCROLLINFO si{ sizeof(si) };
     si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
     si.nMin = 0;
-    si.nMax = context->scrollMax;
+    si.nMax = (std::max)(0, maxBottom - contentTop - 1);
     si.nPage = (visibleBottom > contentTop) ? static_cast<UINT>(visibleBottom - contentTop) : 0;
     si.nPos = context->scrollOffset;
     SetScrollInfo(window, SB_VERT, &si, TRUE);
@@ -153,9 +154,11 @@ void UpdateScrollRange(HWND window, Context* context) {
 }
 
 std::wstring ExecutablePath() {
-    wchar_t path[32768]{};
-    const DWORD length = GetModuleFileNameW(nullptr, path, static_cast<DWORD>(std::size(path)));
-    return length > 0 && length < std::size(path) ? std::wstring(path, length) : L"";
+    std::wstring path(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (length == 0 || length >= path.size()) return {};
+    path.resize(length);
+    return path;
 }
 
 bool StartupEnabled() {
@@ -163,11 +166,11 @@ bool StartupEnabled() {
     if (RegOpenKeyExW(HKEY_CURRENT_USER,
         L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_QUERY_VALUE,
         &key) != ERROR_SUCCESS) return false;
-    wchar_t value[32768]{};
+    std::vector<wchar_t> value(32768);
     DWORD type = 0;
-    DWORD bytes = sizeof(value);
+    DWORD bytes = static_cast<DWORD>(value.size() * sizeof(wchar_t));
     const LONG result = RegQueryValueExW(key, L"DeskTodo", nullptr, &type,
-        reinterpret_cast<BYTE*>(value), &bytes);
+        reinterpret_cast<BYTE*>(value.data()), &bytes);
     RegCloseKey(key);
     return result == ERROR_SUCCESS && type == REG_SZ && value[0] != L'\0';
 }
@@ -240,22 +243,22 @@ std::wstring FindEverything() {
         if (GetFileAttributesW(candidate) != INVALID_FILE_ATTRIBUTES) return candidate;
     }
 
-    wchar_t path[32768]{};
-    if (SearchPathW(nullptr, L"Everything.exe", nullptr,
-                    static_cast<DWORD>(std::size(path)), path, nullptr) > 0) return path;
+    std::vector<wchar_t> path(32768);
+    const DWORD length = SearchPathW(nullptr, L"Everything.exe", nullptr,
+        static_cast<DWORD>(path.size()), path.data(), nullptr);
+    if (length > 0 && length < path.size()) return std::wstring(path.data(), length);
 
     HKEY key = nullptr;
     if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
         L"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Everything.exe",
         0, KEY_QUERY_VALUE | KEY_WOW64_64KEY, &key) == ERROR_SUCCESS) {
-        wchar_t value[32768]{};
-        DWORD type = 0;
-        DWORD bytes = sizeof(value);
-        const LONG result = RegQueryValueExW(key, nullptr, nullptr, &type,
-            reinterpret_cast<BYTE*>(value), &bytes);
+        std::vector<wchar_t> value(32768);
+        DWORD bytes = static_cast<DWORD>(value.size() * sizeof(wchar_t));
+        const LONG result = RegGetValueW(key, nullptr, nullptr, RRF_RT_REG_SZ, nullptr,
+            value.data(), &bytes);
         RegCloseKey(key);
-        if (result == ERROR_SUCCESS && type == REG_SZ &&
-            GetFileAttributesW(value) != INVALID_FILE_ATTRIBUTES) return value;
+        if (result == ERROR_SUCCESS &&
+            GetFileAttributesW(value.data()) != INVALID_FILE_ATTRIBUTES) return value.data();
     }
     return L"";
 }
@@ -268,7 +271,7 @@ void SearchEverything(HWND owner, const std::wstring& query) {
     }
     const std::wstring executable = FindEverything();
     if (!executable.empty()) {
-        std::wstring command = L"Everything.exe -search \"" + query + L"\"";
+        std::wstring command = LaunchArguments::Quote(executable) + L" -search " + LaunchArguments::Quote(query);
         STARTUPINFOW startup{ sizeof(startup) };
         PROCESS_INFORMATION process{};
         bool launched = CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr,
@@ -289,7 +292,7 @@ void SearchEverything(HWND owner, const std::wstring& query) {
         MessageBoxW(owner, detail.c_str(), L"桌面搜索", MB_OK | MB_ICONWARNING);
     }
 
-    const std::wstring uri = L"search-ms:query=" + query;
+    const std::wstring uri = L"search-ms:query=" + LaunchArguments::UriQuery(query);
     SHELLEXECUTEINFOW launch{ sizeof(launch) };
     launch.fMask = SEE_MASK_ASYNCOK | SEE_MASK_FLAG_NO_UI;
     launch.hwnd = owner;
@@ -356,8 +359,7 @@ void ShowPage(Context* context, int page) {
     HWND settings = GetParent(context->navButtons[0]);
     if (settings) UpdateScrollRange(settings, context);
     LayoutControls(context);
-    InvalidateRect(settings, nullptr, TRUE);
-    UpdateWindow(settings);
+    if (settings) { InvalidateRect(settings, nullptr, TRUE); UpdateWindow(settings); }
 }
 
 void SetControlFonts(Context* context) {
@@ -374,6 +376,7 @@ void SetControlFonts(Context* context) {
 }
 
 void DrawOwnerButton(const DRAWITEMSTRUCT* draw, const Context* context) {
+    if (!draw || !context) return;
     const int id = static_cast<int>(draw->CtlID);
     const bool isNav = id >= NavBaseId && id < NavBaseId + PageCount;
     const bool selected = isNav && context && id - NavBaseId == context->activePage;
@@ -697,9 +700,13 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             const std::wstring searchQuery(query);
-            std::thread([window, searchQuery]() {
-                SearchEverything(window, searchQuery);
-            }).detach();
+            try {
+                std::thread([searchQuery]() {
+                    // The settings HWND may be destroyed before discovery ends.
+                    try { SearchEverything(nullptr, searchQuery); }
+                    catch (...) { MessageBoxW(nullptr, L"搜索启动失败，请稍后重试。", L"桌面搜索", MB_OK | MB_ICONERROR); }
+                }).detach();
+            } catch (...) { MessageBoxW(window, L"无法启动搜索，请稍后重试。", L"桌面搜索", MB_OK | MB_ICONERROR); }
             return 0;
         }
         case PomodoroId:
@@ -917,6 +924,7 @@ void Show(HWND owner, FenceManager* manager) {
             DispatchMessageW(&message);
         }
     }
+    if (IsWindow(settings)) DestroyWindow(settings);
     EnableWindow(owner, TRUE);
     if (quitRequested) {
         PostQuitMessage(static_cast<int>(message.wParam));

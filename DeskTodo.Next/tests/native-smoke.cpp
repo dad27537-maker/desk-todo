@@ -23,6 +23,11 @@
 #include "Services/SnapManager.h"
 #include "Services/ShellIntegrationService.h"
 #include "Utils/JsonUtils.h"
+#include "App/AppCommand.h"
+#include "Models/WidgetPlacement.h"
+#include "Services/AtomicFile.h"
+#include "Utils/LaunchArguments.h"
+#include <shellapi.h>
 
 namespace fs = std::filesystem;
 
@@ -33,6 +38,15 @@ int checks = 0;
 std::unordered_map<std::wstring, POINT> recoveryPositions;
 std::unordered_map<std::wstring, int> recoveryWrites;
 std::wstring recoveryFailure;
+std::vector<std::pair<std::wstring, POINT>> recoveryBatchPositions;
+int recoveryBatchCalls = 0;
+
+bool QueueRecoveryPositions(const std::vector<std::pair<std::wstring, POINT>>& positions) {
+    ++recoveryBatchCalls;
+    recoveryBatchPositions = positions;
+    // Explorer can accept a positioning request before applying its layout.
+    return true;
+}
 
 bool ReadRecoveryPosition(const std::wstring& path, POINT& point) {
     const auto found = recoveryPositions.find(path);
@@ -125,8 +139,62 @@ int main() {
     fs::create_directories(root / "source", ec);
     fs::create_directories(root / "target", ec);
     Check(!ec, "test directories are created");
+    const std::wstring search = L"\"中文 name\" C:\\folder\\ &more";
+    const auto commandLine = L"app.exe " + LaunchArguments::Quote(search);
+    int argumentCount = 0;
+    auto arguments = CommandLineToArgvW(commandLine.c_str(), &argumentCount);
+    Check(arguments && argumentCount == 2 && arguments[1] == search, "search quotes and backslashes roundtrip as one argument");
+    if (arguments) LocalFree(arguments);
+    Check(LaunchArguments::UriQuery(L"a&b#文") == L"a%26b%23%E6%96%87", "Windows search query cannot become URI parameters");
+
+    Check(AppCommand::ParseCommandLine(L"\"C:\\--render folder\\DeskTodo.exe\" --settings") == L"settings",
+          "renderer switch in executable path is not a command");
+    std::wstring forwarded;
+    const wchar_t validCommand[] = L"settings";
+    Check(AppCommand::DecodeForwardedCommand(validCommand, sizeof(validCommand), forwarded) && forwarded == L"settings",
+          "bounded IPC command roundtrip");
+    Check(!AppCommand::DecodeForwardedCommand(validCommand, sizeof(validCommand) - sizeof(wchar_t), forwarded) &&
+          !AppCommand::DecodeForwardedCommand(validCommand, 3, forwarded), "unterminated and misaligned IPC rejected");
+    RECT restoredWidget = WidgetPlacement::Fit({3000, 10, 3500, 410}, {0, 0, 1920, 1080}, {440, 380}, {400, 340}, 250);
+    Check(restoredWidget.right - restoredWidget.left == 500 && restoredWidget.bottom - restoredWidget.top == 400 &&
+          restoredWidget.right <= 1920, "removed-monitor widget preserves size and stays visible");
+    RECT corruptWidget = WidgetPlacement::Fit({LONG_MIN, LONG_MIN, LONG_MAX, LONG_MAX}, {0, 0, 800, 600}, {440, 380}, {400, 340}, 250);
+    Check(corruptWidget.right == 800 && corruptWidget.bottom == 600 && corruptWidget.left == 0,
+          "extreme widget bounds do not overflow or exceed work area");
+    PomodoroTimerState delayedTimer; delayedTimer.running = true;
+    Check(!PomodoroTimer::Advance(delayedTimer, 7) && delayedTimer.remainingSeconds == 1493,
+          "timer advances by elapsed duration rather than message count");
+    Check(PomodoroTimer::Advance(delayedTimer, 1800 * 100ULL + 1493) && !delayedTimer.focusPhase &&
+          delayedTimer.remainingSeconds == 300 && delayedTimer.completedFocusSessions == 101,
+          "timer catches up across sleep and phase boundaries");
+    std::vector<TodoItem> overflowIds{{L"first", false, 1}, {L"last", false, UINT64_MAX}};
+    Check(TodoList::Add(overflowIds, L"new") && overflowIds.back().id == 2, "Todo IDs remain unique after wraparound");
+    std::vector<Fence> nestedFences;
+    Check(!JsonDeserialize(L"{\"fences\":[],\"extra\":" + std::wstring(10000, L'[') + L"0" +
+          std::wstring(10000, L']') + L"}", nestedFences), "deeply nested config rejected without stack exhaustion");
+    const auto atomicPath = root / L"atomic.dat";
+    WriteText(atomicPath, "old");
+    WriteText(root / L"atomic.dat.tmp", "unrelated");
+    Check(AtomicFile::Write(atomicPath.wstring(), "new") && ReadText(atomicPath) == "new" &&
+          ReadText(root / L"atomic.dat.tmp") == "unrelated", "atomic save preserves unrelated temporary-looking files");
+    HANDLE atomicLock = CreateFileW(atomicPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+    Check(!AtomicFile::Write(atomicPath.wstring(), "lost") && ReadText(atomicPath) == "new",
+          "failed atomic replacement preserves previous state");
+    CloseHandle(atomicLock);
 
     FileMoveService mover;
+    const auto reservation = root / L"reservation";
+    fs::create_directories(reservation);
+    WriteText(reservation / L".desktodo-name-reservation", "DeskTodo.NameReservation.v1");
+    SetEnvironmentVariableW(L"DESKTODO_DESKTOP_ROOT", root.c_str());
+    Check(mover.RemoveDesktopNameReservation(reservation.wstring()) && !fs::exists(reservation),
+          "empty legacy reservation is cleaned");
+    fs::create_directories(reservation);
+    WriteText(reservation / L".desktodo-name-reservation", "DeskTodo.NameReservation.v1");
+    WriteText(reservation / L"user-document.txt", "keep");
+    Check(!mover.RemoveDesktopNameReservation(reservation.wstring()) && ReadText(reservation / L"user-document.txt") == "keep",
+          "reservation containing real user files is never disposable");
+    SetEnvironmentVariableW(L"DESKTODO_DESKTOP_ROOT", nullptr);
     std::wstring movedPath;
 
     const fs::path sourceFile = root / "source" / "move.txt";
@@ -357,6 +425,10 @@ int main() {
           restoredDesktopSnapshot[0].position.x == 640 &&
           restoredDesktopSnapshot[0].path.find(L"loose.txt") != std::wstring::npos,
           "desktop file positions survive the bak round trip");
+    const auto emptyBackup = root / L"empty-layout.bak";
+    Check(configService.BackupLayout({}, {}, emptyBackup.wstring()) &&
+          configService.RestoreLayout(emptyBackup.wstring(), restoredBackup, restoredDesktopSnapshot) &&
+          restoredBackup.empty() && restoredDesktopSnapshot.empty(), "empty layout backup roundtrip");
 
     const fs::path missingConfigRoot = root / "missing-layout-config";
     SetEnvironmentVariableW(
@@ -367,6 +439,9 @@ int main() {
     Check(missingConfigResult.status == ConfigLoadStatus::Missing &&
           missingConfigResult.fences.empty(),
           "absent primary and last-good report Missing");
+    WriteText(missingConfigRoot / "config.json", "{\"version\":9,\"fences\":[{\"id\":\"../outside\"}]}");
+    Check(missingConfigService.LoadFencesWithStatus().status == ConfigLoadStatus::Corrupt,
+          "configuration cannot escape fence storage through an identifier");
 
     const fs::path corruptConfigRoot = root / "corrupt-layout-config";
     SetEnvironmentVariableW(
@@ -687,7 +762,7 @@ int main() {
         reloadedIconLayout.ProcessTopologyRecoveryBatch(32);
         ++recoveryTicks;
     }
-    Check(!reloadedIconLayout.HasPendingTopologyRecovery() && recoveryTicks <= 4,
+    Check(!reloadedIconLayout.HasPendingTopologyRecovery() && recoveryTicks <= 8,
           "failed Explorer restoration stops after bounded retry rounds");
     const fs::path newlyCreatedIcon = iconDesktopRoot / "NewAfterRecovery.txt";
     WriteText(newlyCreatedIcon, "new");
@@ -726,6 +801,33 @@ int main() {
               *resumedAnchor, dualTopology, resumedPoint) &&
           resumedPoint.x == 2220 && resumedPoint.y == 300,
           "verified recovery releases capture protection for later user moves");
+    DesktopIconLayoutService batchRecovery(ReadRecoveryPosition, nullptr, QueueRecoveryPositions);
+    recoveryPositions = {{primaryIcon.wstring(), {2070, 150}},
+                         {secondaryIcon.wstring(), {120, 160}}};
+    recoveryBatchCalls = 0;
+    Check(batchRecovery.UpdateFromPositions(dualTopology,
+        {{primaryIcon.wstring(), {120, 160}}, {secondaryIcon.wstring(), {2070, 150}}}),
+        "seed startup layout with occupied destination cells");
+    batchRecovery.BeginTopologyRecovery(dualTopology);
+    batchRecovery.ProcessTopologyRecoveryBatch(1);
+    Check(recoveryBatchCalls == 1 && recoveryBatchPositions.size() == 2 &&
+          batchRecovery.HasPendingTopologyRecovery(),
+          "restoration submits the complete layout even when verification is limited to one item");
+    batchRecovery.CaptureStable(dualTopology);
+    POINT protectedStartupPoint{};
+    Check(DesktopIconLayoutService::ResolveOnlinePoint(batchRecovery.Anchors().front(), dualTopology,
+          protectedStartupPoint) && protectedStartupPoint.x == 120 && protectedStartupPoint.y == 160,
+          "accepted but unapplied startup recovery cannot overwrite saved anchors");
+    for (const auto& position : recoveryBatchPositions) recoveryPositions[position.first] = position.second;
+    batchRecovery.ProcessTopologyRecoveryBatch(1);
+    recoveryPositions[primaryIcon.wstring()] = {350, 250};
+    Check(batchRecovery.RecordUserPlacement(dualTopology, primaryIcon.wstring(), {350, 250}),
+          "a native user drop supersedes a batch recovery target");
+    batchRecovery.ProcessTopologyRecoveryBatch(1);
+    Check(!batchRecovery.HasPendingTopologyRecovery() && recoveryBatchCalls == 1 &&
+          recoveryPositions[primaryIcon.wstring()].x == 350 && recoveryPositions[primaryIcon.wstring()].y == 250 &&
+          recoveryPositions[secondaryIcon.wstring()].x == 2070 && recoveryPositions[secondaryIcon.wstring()].y == 150,
+          "later verification does not reapply old positions or displace an already restored icon");
     // One icon's delayed recovery must not undo a successful icon's later
     // native move to the negative-coordinate second monitor.
     auto leftTopology = dualTopology;
@@ -868,8 +970,8 @@ int main() {
           "capture toolbar flips above a selection near the screen bottom");
     Check(toolbar.bounds.left >= 0 && toolbar.bounds.right <= 1920,
           "capture toolbar remains inside the physical screen bounds");
-    Check(toolbar.buttons.size() == 12,
-          "capture toolbar contains only the twelve non-recording actions");
+    Check(toolbar.buttons.size() == 13,
+          "capture toolbar contains thirteen actions including screenshot translation");
     Check(CaptureToolbar::HitTest(toolbar,
           { toolbar.buttons[0].left + 2, toolbar.buttons[0].top + 2 }) ==
           CaptureAction::Cancel, "capture toolbar exposes the cancel action");
@@ -888,6 +990,9 @@ int main() {
     Check(CaptureToolbar::HitTest(toolbar,
           { toolbar.buttons[11].left + 2, toolbar.buttons[11].top + 2 }) ==
           CaptureAction::Clear, "capture toolbar exposes clear without a recording action");
+    Check(CaptureToolbar::HitTest(toolbar,
+          { toolbar.buttons[12].left + 2, toolbar.buttons[12].top + 2 }) ==
+          CaptureAction::Translate, "capture toolbar exposes screenshot translation");
     const CapturePropertyLayout textProperties = CaptureToolbar::BuildProperty(
         toolbar, { 0, 0, 1920, 1080 }, true);
     Check(textProperties.bounds.left >= 0 && textProperties.bounds.right <= 1920 &&

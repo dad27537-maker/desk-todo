@@ -76,10 +76,45 @@ struct ScopedBitmap {
     ~ScopedBitmap() { if (handle) DeleteObject(handle); }
 };
 
+std::wstring LowerLanguageTag(std::wstring tag) {
+    for (auto& character : tag) character = static_cast<wchar_t>(std::towlower(character));
+    return tag;
+}
+
+std::wstring MissingLanguageMessage(const std::wstring& tag) {
+    return L"请在 Windows 设置安装 " + tag + L" OCR 语言包，或粘贴/修正原文后翻译。";
+}
+
+bool UsesPaddleAlphabet(const std::wstring& tag) {
+    const auto primaryEnd = tag.find(L'-');
+    const auto primary = tag.substr(0, primaryEnd);
+    std::wstring script;
+    if (primaryEnd != std::wstring::npos) {
+        const auto scriptEnd = tag.find(L'-', primaryEnd + 1);
+        const auto part = tag.substr(primaryEnd + 1, scriptEnd - primaryEnd - 1);
+        if (part.size() == 4) script = part;
+    }
+    if (primary == L"zh") return script.empty() || script == L"hans" || script == L"hant";
+    if (primary == L"ja") return script.empty() || script == L"jpan";
+    if (!script.empty() && script != L"latn") return false;
+    // PP-OCRv6 medium: Chinese, English, Japanese and Latin-script languages.
+    // https://www.paddleocr.ai/main/en/version3.x/pipeline_usage/OCR.html
+    constexpr std::wstring_view latin[] = {
+        L"en", L"af", L"az", L"bs", L"ca", L"cs", L"cy", L"da", L"de",
+        L"es", L"et", L"eu", L"fi", L"fr", L"ga", L"gl", L"hr", L"hu",
+        L"id", L"is", L"it", L"ku", L"la", L"lb", L"lt", L"lv", L"mi",
+        L"ms", L"mt", L"nl", L"no", L"oc", L"pl", L"pt", L"qu", L"rm",
+        L"ro", L"sk", L"sl", L"sq", L"sv", L"sw", L"tl", L"tr", L"uz", L"vi"
+    };
+    if (primary == L"sr") return script == L"latn";
+    return std::find(std::begin(latin), std::end(latin), primary) != std::end(latin);
+}
+
 }
 
 static bool RecognizeWindowsBitmap(HBITMAP bitmap, std::wstring& text,
-                                    std::wstring& error) {
+                                    std::wstring& error,
+                                    const std::wstring& languageTag = {}) {
     text.clear();
     error.clear();
     if (!bitmap) {
@@ -173,16 +208,35 @@ static bool RecognizeWindowsBitmap(HBITMAP bitmap, std::wstring& text,
         stage = L"ocr-engine";
         using winrt::Windows::Media::Ocr::OcrEngine;
         std::vector<OcrEngine> engines;
-        for (const wchar_t* tag : {L"zh-Hans-CN", L"zh-Hant-TW", L"en-US"}) {
-            auto language = winrt::Windows::Globalization::Language(tag);
-            if (OcrEngine::IsLanguageSupported(language)) {
-                auto engine = OcrEngine::TryCreateFromLanguage(language);
+        if (!languageTag.empty()) {
+            // Match neutral tags (ja) to an installed specific tag (ja-JP),
+            // preserving requested script/region instead of using profile Chinese.
+            const auto requested = LowerLanguageTag(languageTag);
+            for (const auto& language : OcrEngine::AvailableRecognizerLanguages()) {
+                const auto available = LowerLanguageTag(language.LanguageTag().c_str());
+                if (available == requested || available.compare(0, requested.size() + 1,
+                                                               requested + L"-") == 0) {
+                    auto engine = OcrEngine::TryCreateFromLanguage(language);
+                    if (engine) engines.push_back(engine);
+                    break;
+                }
+            }
+            if (engines.empty()) {
+                error = MissingLanguageMessage(languageTag);
+                return false;
+            }
+        } else {
+            for (const wchar_t* tag : {L"zh-Hans-CN", L"zh-Hant-TW", L"en-US"}) {
+                auto language = winrt::Windows::Globalization::Language(tag);
+                if (OcrEngine::IsLanguageSupported(language)) {
+                    auto engine = OcrEngine::TryCreateFromLanguage(language);
+                    if (engine) engines.push_back(engine);
+                }
+            }
+            if (engines.empty()) {
+                auto engine = OcrEngine::TryCreateFromUserProfileLanguages();
                 if (engine) engines.push_back(engine);
             }
-        }
-        if (engines.empty()) {
-            auto engine = OcrEngine::TryCreateFromUserProfileLanguages();
-            if (engine) engines.push_back(engine);
         }
         if (engines.empty()) {
             error = L"系统未安装可用的中英文 OCR 语言包。";
@@ -203,6 +257,11 @@ static bool RecognizeWindowsBitmap(HBITMAP bitmap, std::wstring& text,
         }
         return true;
     } catch (const winrt::hresult_error& exception) {
+        text.clear();
+        if (!languageTag.empty() && std::wstring_view(stage) == L"ocr-engine") {
+            error = MissingLanguageMessage(languageTag);
+            return false;
+        }
         wchar_t code[32]{};
         swprintf_s(code, L"0x%08X", static_cast<unsigned int>(exception.code().value));
         error = L"Windows OCR failed at " + std::wstring(stage) + L" (" +
@@ -210,6 +269,7 @@ static bool RecognizeWindowsBitmap(HBITMAP bitmap, std::wstring& text,
                 std::wstring(exception.message().c_str());
         return false;
     } catch (...) {
+        text.clear();
         error = L"OCR 识别发生未知错误。";
         return false;
     }
@@ -223,10 +283,28 @@ bool OcrService::RecognizeBitmap(HBITMAP bitmap, std::wstring& text,
     std::wstring paddleError;
     if (backend != Backend::Windows) {
         if (PaddleOcrService::RecognizeBitmap(bitmap, text, paddleError)) return true;
-        if (backend == Backend::Paddle) { error = std::move(paddleError); return false; }
+        if (backend == Backend::Paddle) { text.clear(); error = std::move(paddleError); return false; }
     }
     if (RecognizeWindowsBitmap(bitmap, text, error)) return true;
     return false;
+}
+
+bool OcrService::RecognizeBitmapForLanguage(HBITMAP bitmap, std::wstring& text,
+                                           std::wstring& error,
+                                           const std::wstring& languageTag) {
+    text.clear();
+    error.clear();
+    if (!bitmap) { error = L"截图位图无效。"; return false; }
+    const auto tag = LowerLanguageTag(languageTag);
+    if (tag.empty() || tag == L"auto") return RecognizeBitmap(bitmap, text, error);
+    if (UsesPaddleAlphabet(tag)) {
+        std::wstring recognized, paddleError;
+        if (PaddleOcrService::RecognizeBitmap(bitmap, recognized, paddleError) && !recognized.empty()) {
+            text = std::move(recognized);
+            return true;
+        }
+    }
+    return RecognizeWindowsBitmap(bitmap, text, error, languageTag);
 }
 
 namespace {
@@ -324,7 +402,7 @@ std::wstring OcrService::ConvertTextToLatex(const std::wstring& text) {
     for (const auto& replacement : replacements)
         ReplaceAll(latex, replacement.first, replacement.second);
     latex = NormalizeSimpleFractions(std::move(latex));
-    ReplaceAll(latex, L"\r\n", L" \\\\ \r\n");
+    ReplaceAll(latex, L"\r\n", L"\n");
     ReplaceAll(latex, L"\n", L" \\\\ \r\n");
     while (!latex.empty() && std::iswspace(latex.front())) latex.erase(latex.begin());
     while (!latex.empty() && std::iswspace(latex.back())) latex.pop_back();

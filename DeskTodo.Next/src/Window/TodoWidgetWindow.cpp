@@ -1,6 +1,9 @@
 #include "TodoWidgetWindow.h"
 
 #include "Services/DesktopPathService.h"
+#include "Services/AtomicFile.h"
+#include "Models/WidgetPlacement.h"
+#include <sstream>
 
 #include <algorithm>
 #include <cstdint>
@@ -49,7 +52,7 @@ bool ReadValue(std::ifstream& stream, T& value) {
 }
 
 template <typename T>
-bool WriteValue(std::ofstream& stream, const T& value) {
+bool WriteValue(std::ostream& stream, const T& value) {
     return static_cast<bool>(stream.write(
         reinterpret_cast<const char*>(&value), sizeof(value)));
 }
@@ -63,7 +66,7 @@ bool ReadWideString(std::ifstream& stream, uint32_t length,
         static_cast<std::streamsize>(length) * sizeof(wchar_t)));
 }
 
-bool WriteWideString(std::ofstream& stream, const std::wstring& value) {
+bool WriteWideString(std::ostream& stream, const std::wstring& value) {
     return value.empty() || static_cast<bool>(stream.write(
         reinterpret_cast<const char*>(value.data()),
         static_cast<std::streamsize>(value.size()) * sizeof(wchar_t)));
@@ -240,18 +243,10 @@ bool TodoWidgetWindow::EnsureWindow() {
     }
     if (!registered) return false;
 
-    RECT position = savedRect_;
-    if (position.right <= position.left || position.bottom <= position.top ||
-        !MonitorFromRect(&position, MONITOR_DEFAULTTONULL)) {
-        MONITORINFO monitor{ sizeof(monitor) };
-        GetMonitorInfoW(MonitorFromPoint({ 0, 0 }, MONITOR_DEFAULTTOPRIMARY), &monitor);
-        position.left = monitor.rcWork.right - WindowWidth - 28;
-        position.top = monitor.rcWork.bottom - WindowHeight - 250;
-    }
-    const int savedWidth = position.right - position.left;
-    const int savedHeight = position.bottom - position.top;
-    const int windowWidth = (std::max)(WindowWidth, savedWidth);
-    const int windowHeight = (std::max)(WindowHeight, savedHeight);
+    const RECT position = WidgetPlacement::Restore(savedRect_, {WindowWidth, WindowHeight},
+        {MinimumWindowWidth, MinimumWindowHeight}, 250);
+    const int windowWidth = position.right - position.left;
+    const int windowHeight = position.bottom - position.top;
     window_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED,
         WindowClass, L"Todo List",
         WS_POPUP | WS_THICKFRAME,
@@ -355,15 +350,12 @@ void TodoWidgetWindow::SaveState(bool visible) {
     EnsureDirectoryExists(GetAppDataPath());
     const std::filesystem::path path =
         std::filesystem::path(GetAppDataPath()) / L"todo-widget.dat";
-    const std::filesystem::path temporaryPath =
-        std::filesystem::path(GetAppDataPath()) / L"todo-widget.dat.tmp";
 
     RECT rect = savedRect_;
     if (window_ && IsWindow(window_)) GetWindowRect(window_, &rect);
     savedRect_ = rect;
 
-    std::ofstream stream(temporaryPath,
-                         std::ios::binary | std::ios::trunc);
+    std::ostringstream stream(std::ios::binary);
     const uint8_t savedVisible = visible ? 1 : 0;
     const uint32_t taskCount = static_cast<uint32_t>(items_.size());
     const uint8_t sort = static_cast<uint8_t>(sortMode_);
@@ -393,15 +385,7 @@ void TodoWidgetWindow::SaveState(bool visible) {
             WriteWideString(stream, item.text);
         if (!ok) break;
     }
-    stream.flush();
-    ok = ok && stream.good();
-    stream.close();
-    if (ok) {
-        ok = MoveFileExW(temporaryPath.c_str(), path.c_str(),
-                         MOVEFILE_REPLACE_EXISTING |
-                         MOVEFILE_WRITE_THROUGH) == TRUE;
-    }
-    if (!ok) DeleteFileW(temporaryPath.c_str());
+    if (ok && stream.good()) AtomicFile::Write(path.wstring(), stream.str());
 }
 
 void TodoWidgetWindow::AddInputTask() {
@@ -945,11 +929,7 @@ LRESULT TodoWidgetWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_NCCALCSIZE:
-        if (wp) {
-            auto* size = reinterpret_cast<NCCALCSIZE_PARAMS*>(lp);
-            size->rgrc[0] = size->rgrc[1];
-            return 0;
-        }
+        if (wp) return 0;
         break;
     case WM_NCHITTEST: {
         POINT point{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };

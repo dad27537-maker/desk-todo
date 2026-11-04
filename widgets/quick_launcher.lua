@@ -56,7 +56,7 @@ function matches()
 end
 
 function currentTheme()
-    local theme = widget.theme()
+    local theme = widget.theme() or {}
     theme.bg = theme.bg or 0x151A21
     theme.border = theme.border or 0xFFFFFF
     theme.alpha = theme.alpha or 0.36
