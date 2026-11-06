@@ -1,0 +1,58 @@
+{
+  "date": "2026-10-27",
+  "quantitative_checks": 210,
+  "build": "DeskTodo.Next/build/Release/DeskTodo.Next.exe",
+  "physical_hotplug_replayed": false,
+  "tests": [
+    {
+      "name": "DeskTodoNativeSmoke",
+      "exit_code": 0,
+      "output": [
+        "DeskTodo.Next native checks: 140, failures: 0"
+      ]
+    },
+    {
+      "name": "DeskTodoLogicalFenceSmoke",
+      "exit_code": 0,
+      "output": [
+        "logical fence locked-file smoke: PASS, desktop-visible=1, idempotent=1, external-path=1, same-name-origins=1, public-desktop=1, legacy-storage-migrated=1, stale-path-repaired=1, shortcut-coalesced=1, persisted=1, mapped-move=1, game-launcher=1, monitor-reconnect=1, monitor-id-recovery=1, removed-primary-anchor=1, logical-organize=1, exit-restored=1, legacy-hidden-cleared=1, corrupt-config-preserved=1, shortcuts=0"
+      ]
+    },
+    {
+      "name": "DeskTodoAsyncFileMoveSmoke",
+      "exit_code": 0,
+      "output": [
+        "29 checks, 0 failures"
+      ]
+    },
+    {
+      "name": "DeskTodoIconCacheSmoke",
+      "exit_code": 0,
+      "output": [
+        "Icon cache smoke: 14 checks, 0 failures"
+      ]
+    },
+    {
+      "name": "DeskTodoOleFileMoveSmoke",
+      "exit_code": 0,
+      "output": [
+        "OLE file move smoke: 19 checks, 0 failures"
+      ]
+    },
+    {
+      "name": "DeskTodoFenceRendererSmoke",
+      "exit_code": 0,
+      "output": [
+        "PASS full frame excludes scrolled-out row bitmap requests=1",
+        "PASS list text-only dirty region does not load icon bitmap requests=0",
+        "PASS visible icon dirty region loads icon bitmap requests=1",
+        "PASS unrelated fence excluded from dirty frame bitmap requests=0",
+        "PASS drag source does not load hidden source bitmap bitmap requests=0",
+        "PASS negative screen origin bitmap requests=1",
+        "PASS filtered item excluded bitmap requests=0",
+        "PASS collapsed fence excludes all items bitmap requests=0"
+      ]
+    }
+  ],
+  "executable_sha256": "8fdd9bf23e0256645c714a4c13c3c3d4e5db7453571a5b73b549da650ee3a724"
+}

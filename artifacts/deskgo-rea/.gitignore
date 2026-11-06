@@ -1,0 +1,9 @@
+/extracted/
+/*.7z
+/Features64.disasm.txt
+/focused-functions.asm.txt
+/selected-strings.json
+/selected-wide-strings.txt
+/focused-call-graph.json
+/evidence.json
+/payload-evidence.json

@@ -1,10 +1,23 @@
 #pragma once
 
 #include <Windows.h>
+#include <commctrl.h>
 #include <string>
 #include <vector>
+#include <atomic>
+#include <memory>
+#include <thread>
 
 #include "Models/CaptureToolbar.h"
+
+struct ScreenshotHotkeyConfig {
+    UINT virtualKey = 'A';
+    BYTE flags = HOTKEYF_CONTROL | HOTKEYF_SHIFT;
+};
+
+ScreenshotHotkeyConfig LoadScreenshotHotkeyConfig();
+bool SaveScreenshotHotkeyConfig(const ScreenshotHotkeyConfig& config);
+UINT ScreenshotHotkeyModifiers(const ScreenshotHotkeyConfig& config);
 
 class ScreenshotTool {
 public:
@@ -15,6 +28,16 @@ public:
     void Destroy();
 
 private:
+    friend struct ScreenshotOcrTestAccess;
+    struct OcrWork {
+        std::atomic<bool> complete{false};
+        bool latex = false;
+        bool success = false;
+        std::wstring text, error;
+    };
+    std::unique_ptr<OcrWork> ocrWork_;
+    std::thread ocrThread_;
+    void FinishOcr();
     struct Stroke { std::vector<POINT> points; COLORREF color{}; int width = 3; };
     struct ArrowMark { POINT start{}; POINT end{}; COLORREF color{}; int width = 3; };
     struct TextMark {
@@ -37,6 +60,8 @@ private:
     RECT virtualScreen_{};
     RECT selection_{};
     POINT selectionStart_{};
+    POINT cursorPosition_{};
+    bool cursorPositionValid_ = false;
     bool selecting_ = false;
     bool selectionReady_ = false;
     bool pinDragging_ = false;
@@ -79,6 +104,7 @@ private:
     void PaintCaptureToolbar(HDC dc);
     void PaintCaptureProperties(HDC dc);
     void PaintCaptureHint(HDC dc);
+    void PaintMagnifier(HDC dc);
     void PaintAnnotations(HDC dc, POINT origin = {});
     void PaintPin(HDC dc);
     HBITMAP CreateSelectionBitmap();

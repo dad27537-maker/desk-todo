@@ -6,6 +6,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 #include "Models/Fence.h"
 #include "Models/PomodoroTimer.h"
@@ -29,6 +30,23 @@ namespace {
 
 int failures = 0;
 int checks = 0;
+std::unordered_map<std::wstring, POINT> recoveryPositions;
+std::unordered_map<std::wstring, int> recoveryWrites;
+std::wstring recoveryFailure;
+
+bool ReadRecoveryPosition(const std::wstring& path, POINT& point) {
+    const auto found = recoveryPositions.find(path);
+    if (found == recoveryPositions.end()) return false;
+    point = found->second;
+    return true;
+}
+
+bool WriteRecoveryPosition(const std::wstring& path, POINT point) {
+    ++recoveryWrites[path];
+    if (path == recoveryFailure) return false;
+    recoveryPositions[path] = point;
+    return true;
+}
 
 void Check(bool condition, const char* message) {
     ++checks;
@@ -503,6 +521,35 @@ int main() {
           MonitorService::FindMonitorById(
               secondaryTopology, L"offline-device") == nullptr,
           "offline monitor identity is not substituted with the primary display");
+    Check(MonitorService::BuildTopologySignature({}).empty(),
+          "an empty hot-plug sample is not a committable topology");
+    auto leftMonitor = secondary;
+    leftMonitor.monitorRect = { -2560, -200, 0, 1240 };
+    leftMonitor.workArea = { -2560, -200, 0, 1200 };
+    const POINT leftPoint{ -2410, -50 };
+    const auto leftPlacement = MonitorService::CapturePoint96(leftPoint, leftMonitor);
+    const POINT leftRoundTrip = MonitorService::MaterializePoint96(leftPlacement, leftMonitor);
+    Check(leftRoundTrip.x == leftPoint.x && leftRoundTrip.y == leftPoint.y,
+          "negative-coordinate mixed-DPI icon anchors round-trip");
+    MonitorService::MonitorSnapshot boundaryLeft;
+    boundaryLeft.stableId = L"a-left";
+    boundaryLeft.monitorRect = boundaryLeft.workArea = { -1920, 0, 0, 1080 };
+    MonitorService::MonitorSnapshot boundaryRight;
+    boundaryRight.stableId = L"b-right";
+    boundaryRight.monitorRect = boundaryRight.workArea = { 0, -500, 1920, 580 };
+    MonitorService::DisplayTopologySnapshot boundaryTopology;
+    boundaryTopology.virtualScreen = { -1920, -500, 1920, 1080 };
+    boundaryTopology.monitors = { boundaryLeft, boundaryRight };
+    RECT spanningFence{ -50, -100, 350, 200 };
+    const RECT expectedSpanningFence = spanningFence;
+    MonitorService::ApplyFenceBounds(spanningFence, boundaryTopology);
+    Check(EqualRect(&spanningFence, &expectedSpanningFence),
+          "cross-screen bounds use largest overlap across negative coordinates and unequal panel tops");
+    std::reverse(boundaryTopology.monitors.begin(), boundaryTopology.monitors.end());
+    spanningFence = expectedSpanningFence;
+    MonitorService::ApplyFenceBounds(spanningFence, boundaryTopology);
+    Check(EqualRect(&spanningFence, &expectedSpanningFence),
+          "cross-screen bounds do not depend on monitor identity enumeration order");
 
     const fs::path iconDesktopRoot = root / "desktop-icon-layout";
     fs::create_directories(iconDesktopRoot, ec);
@@ -570,6 +617,31 @@ int main() {
               L"secondary-device",
           "Explorer's temporary primary projection does not overwrite an offline secondary anchor");
 
+    // Removing the old primary can move an identical surviving panel into its
+    // exact rectangle and give it the primary flag. This must not migrate the
+    // removed panel's saved icon onto the survivor by geometric fallback.
+    auto survivingMonitor = primary;
+    survivingMonitor.stableId = secondary.stableId;
+    MonitorService::DisplayTopologySnapshot survivorOnly = primaryOnly;
+    survivorOnly.monitors = { survivingMonitor };
+    survivorOnly.signature = MonitorService::BuildTopologySignature(survivorOnly);
+    Check(iconLayout.UpdateFromPositions(
+              survivorOnly,
+              { { primaryIcon.wstring(), POINT{ 520, 300 } } }),
+          "a remaining monitor taking the primary slot can be sampled safely");
+    const auto removedPrimaryAnchor = std::find_if(
+        iconLayout.Anchors().begin(), iconLayout.Anchors().end(),
+        [&](const DesktopIconAnchor& anchor) {
+            return _wcsicmp(anchor.path.c_str(), primaryIcon.c_str()) == 0;
+        });
+    POINT removedPrimaryPoint{};
+    Check(removedPrimaryAnchor != iconLayout.Anchors().end() &&
+          removedPrimaryAnchor->placement.monitorId == primary.stableId &&
+          removedPrimaryAnchor->placement.x96 == 180 &&
+          !DesktopIconLayoutService::ResolveOnlinePoint(
+              *removedPrimaryAnchor, survivorOnly, removedPrimaryPoint),
+          "removing primary preserves its icon anchor when the survivor takes (0,0)");
+
     DesktopIconLayoutService reloadedIconLayout;
     Check(reloadedIconLayout.Load() &&
           reloadedIconLayout.Anchors().size() == 2,
@@ -606,6 +678,126 @@ int main() {
           replacementIdentityPoint.x == 2070 &&
           replacementIdentityPoint.y == 150,
           "desktop icon anchor survives a unique monitor identity replacement");
+
+    // These isolated desktop paths are absent from the real Explorer view,
+    // so restoration fails without touching the user's actual desktop files.
+    reloadedIconLayout.BeginTopologyRecovery(dualTopology);
+    int recoveryTicks = 0;
+    while (reloadedIconLayout.HasPendingTopologyRecovery() && recoveryTicks < 8) {
+        reloadedIconLayout.ProcessTopologyRecoveryBatch(32);
+        ++recoveryTicks;
+    }
+    Check(!reloadedIconLayout.HasPendingTopologyRecovery() && recoveryTicks <= 4,
+          "failed Explorer restoration stops after bounded retry rounds");
+    const fs::path newlyCreatedIcon = iconDesktopRoot / "NewAfterRecovery.txt";
+    WriteText(newlyCreatedIcon, "new");
+    Check(reloadedIconLayout.UpdateFromPositions(
+              dualTopology,
+              { { secondaryIcon.wstring(), POINT{ 500, 300 } },
+                { newlyCreatedIcon.wstring(), POINT{ 700, 300 } } }),
+          "capture continues for unrelated paths after a failed recovery");
+    POINT protectedSecondaryPoint{};
+    const auto protectedSecondaryAnchor = std::find_if(
+        reloadedIconLayout.Anchors().begin(), reloadedIconLayout.Anchors().end(),
+        [&](const DesktopIconAnchor& anchor) {
+            return _wcsicmp(anchor.path.c_str(), secondaryIcon.c_str()) == 0;
+        });
+    Check(reloadedIconLayout.Anchors().size() == 3 &&
+          protectedSecondaryAnchor != reloadedIconLayout.Anchors().end() &&
+          DesktopIconLayoutService::ResolveOnlinePoint(
+              *protectedSecondaryAnchor, dualTopology, protectedSecondaryPoint) &&
+          protectedSecondaryPoint.x == 2070 && protectedSecondaryPoint.y == 150,
+          "failed restoration cannot overwrite the saved anchor with a primary projection");
+    Check(reloadedIconLayout.UpdateFromPositions(
+              dualTopology,
+              { { secondaryIcon.wstring(), POINT{ 2070, 150 } } }) &&
+          reloadedIconLayout.UpdateFromPositions(
+              dualTopology,
+              { { secondaryIcon.wstring(), POINT{ 2220, 300 } } }),
+          "a verified recovered path resumes ordinary position capture");
+    const auto resumedAnchor = std::find_if(
+        reloadedIconLayout.Anchors().begin(), reloadedIconLayout.Anchors().end(),
+        [&](const DesktopIconAnchor& anchor) {
+            return _wcsicmp(anchor.path.c_str(), secondaryIcon.c_str()) == 0;
+        });
+    POINT resumedPoint{};
+    Check(resumedAnchor != reloadedIconLayout.Anchors().end() &&
+          DesktopIconLayoutService::ResolveOnlinePoint(
+              *resumedAnchor, dualTopology, resumedPoint) &&
+          resumedPoint.x == 2220 && resumedPoint.y == 300,
+          "verified recovery releases capture protection for later user moves");
+    // One icon's delayed recovery must not undo a successful icon's later
+    // native move to the negative-coordinate second monitor.
+    auto leftTopology = dualTopology;
+    leftTopology.monitors = { primary, leftMonitor };
+    leftTopology.virtualScreen = { -2560, -200, 1920, 1240 };
+    leftTopology.signature = MonitorService::BuildTopologySignature(leftTopology);
+    DesktopIconLayoutService successfulRecovery(ReadRecoveryPosition, WriteRecoveryPosition);
+    recoveryPositions = {{ primaryIcon.wstring(), { 400, 300 } },
+                         { secondaryIcon.wstring(), { 500, 300 } }};
+    recoveryWrites.clear();
+    recoveryFailure = primaryIcon.wstring();
+    Check(successfulRecovery.UpdateFromPositions(leftTopology,
+        {{ primaryIcon.wstring(), {120, 160} },
+         { secondaryIcon.wstring(), leftPoint }}), "seed recovery with left-screen anchors");
+    successfulRecovery.BeginTopologyRecovery(leftTopology);
+    successfulRecovery.ProcessTopologyRecoveryBatch(32);
+    Check(recoveryWrites[secondaryIcon.wstring()] == 1 &&
+          successfulRecovery.HasPendingTopologyRecovery(),
+          "successful icon is restored once while another icon keeps retrying");
+    const POINT userMovedPoint{ -2110, 250 };
+    recoveryPositions[secondaryIcon.wstring()] = userMovedPoint;
+    Check(successfulRecovery.CaptureStable(leftTopology),
+          "user moves can be captured while unrelated restoration is pending");
+    for (int tick = 0; tick < 5; ++tick) successfulRecovery.ProcessTopologyRecoveryBatch(32);
+    POINT movedAnchor{};
+    const auto movedIcon = std::find_if(successfulRecovery.Anchors().begin(),
+        successfulRecovery.Anchors().end(), [&](const DesktopIconAnchor& anchor) {
+            return anchor.path == secondaryIcon.wstring();
+        });
+    Check(recoveryWrites[secondaryIcon.wstring()] == 1 &&
+          recoveryPositions[secondaryIcon.wstring()].x == userMovedPoint.x &&
+          movedIcon != successfulRecovery.Anchors().end() &&
+          DesktopIconLayoutService::ResolveOnlinePoint(*movedIcon, leftTopology, movedAnchor) &&
+          movedAnchor.x == userMovedPoint.x && movedAnchor.y == userMovedPoint.y,
+          "later retry rounds never pull a user-moved icon back to its old screen");
+
+    const fs::path draggedFolder = iconDesktopRoot / "DraggedFolder";
+    const fs::path draggedShortcut = iconDesktopRoot / "DraggedShortcut.lnk";
+    fs::create_directories(draggedFolder, ec);
+    WriteText(draggedShortcut, "shortcut");
+    DesktopIconLayoutService nativeDrop(ReadRecoveryPosition, WriteRecoveryPosition);
+    Check(nativeDrop.UpdateFromPositions(leftTopology,
+        {{ draggedFolder.wstring(), {120, 160} },
+         { draggedShortcut.wstring(), {240, 160} }}), "seed native folder and shortcut on primary");
+    recoveryPositions[draggedFolder.wstring()] = {400, 300};
+    recoveryPositions[draggedShortcut.wstring()] = {500, 300};
+    recoveryWrites.clear();
+    nativeDrop.BeginTopologyRecovery(leftTopology);
+    Check(nativeDrop.RecordUserPlacement(leftTopology, draggedFolder.wstring(), {-2110, 250}) &&
+          nativeDrop.RecordUserPlacement(leftTopology, draggedShortcut.wstring(), {-1960, 250}),
+          "confirmed native folder and shortcut drops supersede queued primary positions");
+    nativeDrop.ProcessTopologyRecoveryBatch(32);
+    Check(recoveryWrites[draggedFolder.wstring()] == 0 &&
+          recoveryWrites[draggedShortcut.wstring()] == 0,
+          "cancelled old targets cannot snap newly dropped folders or shortcuts back");
+    DesktopIconLayoutService persistedDrop;
+    Check(persistedDrop.Load(), "native drop anchors are saved immediately");
+    Check(persistedDrop.UpdateFromPositions(primaryOnly,
+        {{ draggedFolder.wstring(), {400, 300} },
+         { draggedShortcut.wstring(), {500, 300} }}),
+          "power-off projections do not replace native second-screen drops");
+    bool folderReturned = false, shortcutReturned = false;
+    for (const auto& anchor : persistedDrop.Anchors()) {
+        POINT restored{};
+        if (!DesktopIconLayoutService::ResolveOnlinePoint(anchor, leftTopology, restored)) continue;
+        if (anchor.path == draggedFolder.wstring())
+            folderReturned = restored.x == -2110 && restored.y == 250;
+        if (anchor.path == draggedShortcut.wstring())
+            shortcutReturned = restored.x == -1960 && restored.y == 250;
+    }
+    Check(folderReturned && shortcutReturned,
+          "screen power cycle restores folder and shortcut to their new second-screen locations");
     SetEnvironmentVariableW(L"DESKTODO_DESKTOP_ROOT", nullptr);
     SetEnvironmentVariableW(L"DESKTODO_DATA_ROOT", nullptr);
 

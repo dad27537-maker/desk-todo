@@ -1,0 +1,36 @@
+﻿caller_va,instruction_va,kind,callee_va,caller_names,callee_names
+0x1800e4e30,0x1800e4e93,call,0x1800e5050,CDeskDropHelper::MovePos,"CDeskDropHelper::OnMovePos | CDeskDropHelper::OnMovePos() dropFileList=%d | CDeskDropHelper::OnMovePos() bCheckInDesktop Path=%s,dwItemId=%d,dwDstBoxId=%d"
+0x1800e5050,0x1800e5164,call,0x1800e64d0,"CDeskDropHelper::OnMovePos | CDeskDropHelper::OnMovePos() dropFileList=%d | CDeskDropHelper::OnMovePos() bCheckInDesktop Path=%s,dwItemId=%d,dwDstBoxId=%d",CDeskDropHelper::NotifyFileEvent
+0x1800e5310,0x1800e5373,call,0x1800e5530,CDeskDropHelper::CreateItem,CDeskDropHelper::OnCreateItem | CDeskDropHelper::OnCreateItem() dropFileList=%d | CDeskDropHelper::OnCreateItem() end dropFileList=%d
+0x1800e5530,0x1800e5c94,call,0x1800e64d0,CDeskDropHelper::OnCreateItem | CDeskDropHelper::OnCreateItem() dropFileList=%d | CDeskDropHelper::OnCreateItem() end dropFileList=%d,CDeskDropHelper::NotifyFileEvent
+0x1800e5530,0x1800e5cbe,call,0x1800e4e30,CDeskDropHelper::OnCreateItem | CDeskDropHelper::OnCreateItem() dropFileList=%d | CDeskDropHelper::OnCreateItem() end dropFileList=%d,CDeskDropHelper::MovePos
+0x1800ef730,0x1800f00f1,call,0x1800f1ef0,CDeskOleDropTarget::Drop strMonitorPath=%s same path | CDeskOleDropTarget::Drop strMonitorPath=%s Not Exist | CDeskOleDropTarget::Drop strMonitorPath=%s,"CDropHandler::Drop pt.x=%d,pt.y=%d | CDropHandler::Drop pt.x=%d,pt.y=%d,left=%d,right=%d,top=%d,bottom=%d | CDropHandler::Drop dwDropType=%d"
+0x1800f1ef0,0x1800f221f,call,0x1800f3db0,"CDropHandler::Drop pt.x=%d,pt.y=%d | CDropHandler::Drop pt.x=%d,pt.y=%d,left=%d,right=%d,top=%d,bottom=%d | CDropHandler::Drop dwDropType=%d",CDropHandler::InSideDrop  same path strMonitorPath=%s
+0x1800f1ef0,0x1800f2265,call,0x1800f5010,"CDropHandler::Drop pt.x=%d,pt.y=%d | CDropHandler::Drop pt.x=%d,pt.y=%d,left=%d,right=%d,top=%d,bottom=%d | CDropHandler::Drop dwDropType=%d",CDropHandler::HandleLeftClickDrop CheckDropFormatSupported m_ftcHDrop | CDropHandler::HandleLeftClickDrop CheckDropFormatSupported m_ftcFileDescriptorW | CDropHandler::HandleLeftClickDrop CheckDropFormatSupported m_ftcFileDescriptorA | CDropHandler::HandleLeftClickDrop CheckDropFormatSupported m_ftcShellIDList | CDropHandler::OnDropFile | CDropHandler::GetQuitEvent | CDropHandler::OnDropFile path=%s | CDropHandler::OnDropFile  Not Exist path=%s | CDropHandler::HandleLeftClickDrop CheckDropFormatSupported not
+0x1800f3db0,0x1800f42c4,call,0x1800e4e30,CDropHandler::InSideDrop  same path strMonitorPath=%s,CDeskDropHelper::MovePos
+0x1800f5010,0x1800f5699,call,0x1800e5310,CDropHandler::HandleLeftClickDrop CheckDropFormatSupported m_ftcHDrop | CDropHandler::HandleLeftClickDrop CheckDropFormatSupported m_ftcFileDescriptorW | CDropHandler::HandleLeftClickDrop CheckDropFormatSupported m_ftcFileDescriptorA | CDropHandler::HandleLeftClickDrop CheckDropFormatSupported m_ftcShellIDList | CDropHandler::OnDropFile | CDropHandler::GetQuitEvent | CDropHandler::OnDropFile path=%s | CDropHandler::OnDropFile  Not Exist path=%s | CDropHandler::HandleLeftClickDrop CheckDropFormatSupported not,CDeskDropHelper::CreateItem
+0x1800f8e00,0x1800f9252,call,0x1800e5310,CDropHandler::OnDropFile | CDropHandler::GetQuitEvent | CDropHandler::OnDropFile path=%s | CDropHandler::OnDropFile  Not Exist path=%s,CDeskDropHelper::CreateItem
+0x1800fbac0,0x1800fcaba,call,0x1800e64d0,CDropHandler::CopyFileDescriptorData GetQuitEvent,CDeskDropHelper::NotifyFileEvent
+0x180126360,0x180126683,call,0x18012f110,Frame::CBoxMultScreenLayoutMgr::ReCheckFileBoxInitPostion,Frame::CBoxMultScreenLayoutMgr::FindPlaceForAnyBoxX
+0x180126360,0x18012719d,call,0x180127310,Frame::CBoxMultScreenLayoutMgr::ReCheckFileBoxInitPostion,Frame::CBoxMultScreenLayoutMgr::GetValidRectByRect
+0x180128000,0x180128078,call,0x180128de0,Frame::CBoxMultScreenLayoutMgr::SysResolutionChangeNotify,Frame::CBoxMultScreenLayoutMgr::SysResolutionChangeToAddScreen
+0x180128000,0x180128083,call,0x180128120,Frame::CBoxMultScreenLayoutMgr::SysResolutionChangeNotify,Frame::CBoxMultScreenLayoutMgr::SysResolutionChangeToChangeBoxRc
+0x180128000,0x18012808b,call,0x180129060,Frame::CBoxMultScreenLayoutMgr::SysResolutionChangeNotify,Frame::CBoxMultScreenLayoutMgr::SysResolutionChangeToCheckInvalidBox
+0x180128000,0x1801280b3,call,0x18011ece0,Frame::CBoxMultScreenLayoutMgr::SysResolutionChangeNotify,CMultiScreenHelper::UpdateOldTaskBarVirtualScreenInfo
+0x180128120,0x180128574,call,0x180126360,Frame::CBoxMultScreenLayoutMgr::SysResolutionChangeToChangeBoxRc,Frame::CBoxMultScreenLayoutMgr::ReCheckFileBoxInitPostion
+0x180128120,0x1801286b4,call,0x18012f110,Frame::CBoxMultScreenLayoutMgr::SysResolutionChangeToChangeBoxRc,Frame::CBoxMultScreenLayoutMgr::FindPlaceForAnyBoxX
+0x180128120,0x1801288a0,call,0x18012dcc0,Frame::CBoxMultScreenLayoutMgr::SysResolutionChangeToChangeBoxRc,Frame::CBoxMultScreenLayoutMgr::EnsureBoxMigratedOnScreen
+0x180128120,0x180128a51,call,0x18012c440,Frame::CBoxMultScreenLayoutMgr::SysResolutionChangeToChangeBoxRc,Frame::CBaseBoxContainer::GetScreenReferenceSize | Frame::CBoxMultScreenLayoutMgr::SwapBoxBetweenTwoScreen
+0x180128de0,0x180128e28,call,0x18012cd80,Frame::CBoxMultScreenLayoutMgr::SysResolutionChangeToAddScreen,Frame::CBoxMultScreenLayoutMgr::OptToAddScreen
+0x180129060,0x18012982b,call,0x18012f110,Frame::CBoxMultScreenLayoutMgr::SysResolutionChangeToCheckInvalidBox,Frame::CBoxMultScreenLayoutMgr::FindPlaceForAnyBoxX
+0x180129060,0x180129a7d,call,0x18012dcc0,Frame::CBoxMultScreenLayoutMgr::SysResolutionChangeToCheckInvalidBox,Frame::CBoxMultScreenLayoutMgr::EnsureBoxMigratedOnScreen
+0x18012a0c0,0x18012a64b,call,0x18012f110,Frame::CBoxMultScreenLayoutMgr::ReOrderAllBoxs,Frame::CBoxMultScreenLayoutMgr::FindPlaceForAnyBoxX
+0x18012a0c0,0x18012b2ca,call,0x18012f110,Frame::CBoxMultScreenLayoutMgr::ReOrderAllBoxs,Frame::CBoxMultScreenLayoutMgr::FindPlaceForAnyBoxX
+0x18012bf80,0x18012c190,call,0x18012c440,Frame::CBoxMultScreenLayoutMgr::OptToTaskBarChangeWorkRc,Frame::CBaseBoxContainer::GetScreenReferenceSize | Frame::CBoxMultScreenLayoutMgr::SwapBoxBetweenTwoScreen
+0x18012bf80,0x18012c351,call,0x180129060,Frame::CBoxMultScreenLayoutMgr::OptToTaskBarChangeWorkRc,Frame::CBoxMultScreenLayoutMgr::SysResolutionChangeToCheckInvalidBox
+0x18012d4c0,0x18012d510,call,0x18011e310,Frame::CBoxMultScreenLayoutMgr::RefreshSystemTaskbarSetting,CMultiScreenHelper::GetSysTaskBarChangedInfo
+0x18012d4c0,0x18012d7c3,call,0x18012bf80,Frame::CBoxMultScreenLayoutMgr::RefreshSystemTaskbarSetting,Frame::CBoxMultScreenLayoutMgr::OptToTaskBarChangeWorkRc
+0x18012d4c0,0x18012d822,call,0x18011ece0,Frame::CBoxMultScreenLayoutMgr::RefreshSystemTaskbarSetting,CMultiScreenHelper::UpdateOldTaskBarVirtualScreenInfo
+0x1802212a0,0x1802213cd,call,0x180223ce0,CDeskDesk::MoveItemPos size=%d dwDstBodId=%d | CDeskDesk::MoveItemPos,"CDeskDesk::MoveItemToBox m_dwBoxId=%d dwDstBodId=%d, dwItemId=%d | CDeskDesk::MoveItemToBox"
+0x1802212a0,0x1802213f7,call,0x180222010,CDeskDesk::MoveItemPos size=%d dwDstBodId=%d | CDeskDesk::MoveItemPos,CDeskDesk::MoveItemToDeskTop size=%d | CDeskDesk::MoveItemToDeskTop
+0x180222010,0x1802221a0,call,0x180222ea0,CDeskDesk::MoveItemToDeskTop size=%d | CDeskDesk::MoveItemToDeskTop,CDeskDesk::MoveItemToDeskTop GetNeedMoveList size=%d

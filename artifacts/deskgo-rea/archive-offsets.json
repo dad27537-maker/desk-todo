@@ -1,0 +1,33 @@
+{
+  "source": "E:\\download\\DeskGo_4_3_1832_127_full_S20000.exe",
+  "source_sha256": "6d3789f2ac124df0a554e64afaf5bc900ad785c655ffe994c47b052ad8805b72",
+  "archives": [
+    {
+      "offset": 2937358,
+      "end": 2991586,
+      "bytes": 54228,
+      "start_valid": true,
+      "next_valid": true,
+      "sha256": "ec44bf458a118750fa034fd46e41afdb7ec8a2f4cd84f6a03d25b1fb7e741c2a",
+      "path": "payload-2937358.7z"
+    },
+    {
+      "offset": 2991594,
+      "end": 210478306,
+      "bytes": 207486712,
+      "start_valid": true,
+      "next_valid": true,
+      "sha256": "bdeaa787dbd626df5cc90da3d6e3bc37152f8113f9b2713e9235057a5f5fdcaa",
+      "path": "payload-2991594.7z"
+    },
+    {
+      "offset": 210478314,
+      "end": 212672191,
+      "bytes": 2193877,
+      "start_valid": true,
+      "next_valid": true,
+      "sha256": "a3a81b8689f0a5684cedb837d49ff248cd77e342f6b650ddbba3994e02f8e7c2",
+      "path": "payload-210478314.7z"
+    }
+  ]
+}

@@ -4,6 +4,8 @@
 #include <string>
 #include <memory>
 #include <vector>
+#include <deque>
+#include "Services/AsyncFileMoveService.h"
 #include "Rendering/FenceRenderer.h"
 #include "Rendering/SnapRenderer.h"
 #include "Models/Fence.h"
@@ -20,6 +22,7 @@ class TodoWidgetWindow;
 class LanTransferWindow;
 class BlackHoleBackground;
 class ScreenshotTool;
+struct OleFileMoveCompletion;
 
 enum class FenceTitleControl {
     None,
@@ -76,6 +79,7 @@ public:
     void Destroy();
     void RequestRedraw();
     void ExecuteCommand(const std::wstring& command);
+    void WaitForFileMoves() { asyncFileMoves.Wait(); }
 
     HWND Handle() const { return hwnd; }
 
@@ -91,12 +95,35 @@ private:
     std::vector<SnapLine> currentSnapLines;
     std::unique_ptr<TooltipService> tooltipService;
     std::unique_ptr<FileMoveService> fileMoveService;
+    struct PendingFileMove {
+        AsyncFileMoveRequest request;
+        std::shared_ptr<OleFileMoveCompletion> oleCompletion;
+        std::wstring sourceFenceId;
+        std::wstring targetFenceId;
+        POINT dropPoint{};
+        POINT desktopOrigin{};
+        bool hasDesktopOrigin = false;
+        bool positionOnDesktop = false;
+        MonitorService::MonitorRelativePoint desktopPlacement;
+        ULONGLONG topologyGeneration = 0;
+        RECT targetRect{};
+        FenceViewMode targetViewMode = FenceViewMode::Icon;
+        int targetScrollOffset = 0;
+        std::wstring targetSearchQuery;
+    };
+    AsyncFileMoveService asyncFileMoves;
+    std::deque<PendingFileMove> pendingFileMoves;
+    bool fileMoveCompletionActive = false;
+    bool exitAfterFileMoves = false;
     std::unique_ptr<DesktopIconLayoutService> desktopIconLayoutService;
     std::unique_ptr<PomodoroWidgetWindow> pomodoroWidget;
     std::unique_ptr<TodoWidgetWindow> todoWidget;
     std::unique_ptr<LanTransferWindow> lanTransferWidget;
     std::unique_ptr<BlackHoleBackground> blackHoleBackground;
     std::unique_ptr<ScreenshotTool> screenshotTool;
+    UINT screenshotHotkeyModifiers = 0;
+    UINT screenshotHotkeyVirtualKey = 0;
+    bool screenshotHotkeyRegistered = false;
     bool exitInProgress = false;
     std::wstring displayTopologySignature;
     MonitorService::DisplayTopologySnapshot displayTopologySnapshot;
@@ -140,6 +167,13 @@ private:
     RECT previousInteractiveDirtyRect{};
     bool previousInteractiveDirtyValid = false;
     ULONGLONG lastDesktopLayoutSyncTick = 0;
+    bool nativeDesktopInputRegistered = false;
+    bool nativeDesktopMouseDown = false;
+    bool nativeDesktopMouseMoved = false;
+    bool nativeDesktopCapturePending = false;
+    int nativeDesktopCaptureAttempts = 0;
+    POINT nativeDesktopMouseStart{};
+    std::wstring nativeDesktopDragTopology;
 
     std::wstring hoverFenceId;
     std::wstring activeFenceId;
@@ -177,6 +211,8 @@ private:
     static constexpr UINT_PTR DESKTOP_RECONCILE_TIMER_ID = 1011;
     static constexpr UINT_PTR SHOW_INSTANCE_TIMER_ID = 1012;
     static constexpr UINT_PTR CLOCK_TIMER_ID = 1013;
+    static constexpr UINT_PTR FILE_MOVE_TIMER_ID = 1014;
+    static constexpr UINT_PTR NATIVE_DESKTOP_CAPTURE_TIMER_ID = 1015;
     static constexpr int CARET_BLINK_MS = 530;
     static constexpr int ANIM_FRAME_MS = 16;
     static constexpr int BLACKHOLE_FRAME_MS = 33; // ~30 FPS
@@ -205,8 +241,11 @@ private:
     void ResetRenderResources();
     void ClearBackbufferRect(const RECT& localRect);
     void AttachToDesktopHost(const RECT& virtualScreen);
+    bool PlaceInDesktopLayer();
     bool PositionForVirtualScreen(const RECT& virtualScreen);
     void Render();
+    void ObserveNativeDesktopMouse(const RAWMOUSE& mouse);
+    void CaptureNativeDesktopDrop();
     void UpdateMovingFence(POINT pt);
     void CancelMove();
     void CancelItemDrag();
@@ -249,6 +288,9 @@ private:
     DropTargetInfo DetectDropTarget(POINT pt) const;
     bool DropItemToFence(const std::wstring& targetFenceId, POINT pt);
     bool DropItemToDesktop(POINT pt);
+    bool QueueFileMove(PendingFileMove move);
+    bool IsPendingFileMovePath(const std::wstring& path) const;
+    void ProcessFileMoves();
     bool MovePathWithConflictPrompt(const std::wstring& sourcePath,
                                     const std::wstring& targetDirectory,
                                     std::wstring* movedPath = nullptr,
@@ -258,11 +300,15 @@ private:
     std::wstring QueryDropFilePath(HDROP hDrop, UINT index);
     void OnDropFiles(HDROP hDrop);
     bool HandleDroppedPaths(const std::vector<std::wstring>& paths,
-                            POINT screenPoint);
+                            POINT screenPoint,
+                            std::shared_ptr<OleFileMoveCompletion> oleCompletion = {});
 
     // 设置窗口
     void ShowSettingsDialog();
     void StartScreenshotCaptureSoon();
+    bool RegisterScreenshotHotkey();
+    void UnregisterScreenshotHotkey();
+    bool ReloadScreenshotHotkey();
 
     // 黑洞背景层
     void ToggleBlackHoleBackground();

@@ -1,0 +1,66 @@
+{
+  "date": "2026-10-27",
+  "build_configuration": "Release x64",
+  "quantitative_checks": 200,
+  "hardware_hotplug_replayed": false,
+  "tests": [
+    {
+      "name": "DeskTodoNativeSmoke",
+      "exit_code": 0,
+      "duration_ms": 434,
+      "output": [
+        "DeskTodo.Next native checks: 130, failures: 0"
+      ]
+    },
+    {
+      "name": "DeskTodoLogicalFenceSmoke",
+      "exit_code": 0,
+      "duration_ms": 812,
+      "output": [
+        "logical fence locked-file smoke: PASS, desktop-visible=1, idempotent=1, external-path=1, same-name-origins=1, public-desktop=1, legacy-storage-migrated=1, stale-path-repaired=1, shortcut-coalesced=1, persisted=1, mapped-move=1, game-launcher=1, monitor-reconnect=1, monitor-id-recovery=1, removed-primary-anchor=1, logical-organize=1, exit-restored=1, legacy-hidden-cleared=1, corrupt-config-preserved=1, shortcuts=0"
+      ]
+    },
+    {
+      "name": "DeskTodoAsyncFileMoveSmoke",
+      "exit_code": 0,
+      "duration_ms": 255,
+      "output": [
+        "29 checks, 0 failures"
+      ]
+    },
+    {
+      "name": "DeskTodoIconCacheSmoke",
+      "exit_code": 0,
+      "duration_ms": 133,
+      "output": [
+        "Icon cache smoke: 14 checks, 0 failures"
+      ]
+    },
+    {
+      "name": "DeskTodoOleFileMoveSmoke",
+      "exit_code": 0,
+      "duration_ms": 48,
+      "output": [
+        "OLE file move smoke: 19 checks, 0 failures"
+      ]
+    },
+    {
+      "name": "DeskTodoFenceRendererSmoke",
+      "exit_code": 0,
+      "duration_ms": 178,
+      "output": [
+        "PASS full frame excludes scrolled-out row bitmap requests=1",
+        "PASS list text-only dirty region does not load icon bitmap requests=0",
+        "PASS visible icon dirty region loads icon bitmap requests=1",
+        "PASS unrelated fence excluded from dirty frame bitmap requests=0",
+        "PASS drag source does not load hidden source bitmap bitmap requests=0",
+        "PASS negative screen origin bitmap requests=1",
+        "PASS filtered item excluded bitmap requests=0",
+        "PASS collapsed fence excludes all items bitmap requests=0"
+      ]
+    }
+  ],
+  "validated_executable": "DeskTodo.Next/build/validated/DeskTodo.Next.exe",
+  "executable_sha256": "29d1ee181ca8de875af8806bfe98105d35ec6bf4459bc60f49fd5d4a1f74ef8e",
+  "diff_check_passed": true
+}

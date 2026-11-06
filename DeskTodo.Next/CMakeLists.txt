@@ -69,6 +69,24 @@ target_include_directories(DeskTodoNativeSmoke PRIVATE src)
 target_link_libraries(DeskTodoNativeSmoke PRIVATE
     shell32 shcore ole32 oleaut32 advapi32 user32 kernel32)
 
+add_executable(DeskTodoAsyncFileMoveSmoke
+    tests/async-file-move-smoke.cpp
+    src/Services/AsyncFileMoveService.cpp
+    src/Services/FileMoveService.cpp
+    src/Services/DesktopPathService.cpp)
+target_include_directories(DeskTodoAsyncFileMoveSmoke PRIVATE src)
+target_link_libraries(DeskTodoAsyncFileMoveSmoke PRIVATE
+    shell32 ole32 user32 kernel32)
+
+add_executable(DeskTodoFenceRendererSmoke
+    tests/fence-renderer-smoke.cpp
+    src/Rendering/FenceRenderer.cpp
+    src/Services/GridLayoutService.cpp
+    src/Services/MonitorService.cpp)
+target_include_directories(DeskTodoFenceRendererSmoke PRIVATE src)
+target_link_libraries(DeskTodoFenceRendererSmoke PRIVATE
+    d2d1 dwrite shell32 shcore ole32 gdi32 user32 kernel32)
+
 add_executable(DeskTodoLogicalFenceSmoke
     tests/logical-fence-smoke.cpp
     src/Managers/FenceManager.cpp
@@ -97,18 +115,72 @@ target_include_directories(DeskTodoDesktopDragProbe PRIVATE src)
 target_link_libraries(DeskTodoDesktopDragProbe PRIVATE
     shell32 comctl32 ole32 oleaut32 user32 kernel32)
 
+add_executable(DeskTodoIconCacheSmoke
+    tests/icon-cache-smoke.cpp
+    src/Services/IconCache.cpp)
+target_include_directories(DeskTodoIconCacheSmoke PRIVATE src)
+target_link_libraries(DeskTodoIconCacheSmoke PRIVATE
+    d2d1 shell32 comctl32 ole32 windowscodecs gdi32 user32 kernel32)
+
+add_executable(DeskTodoOleFileMoveSmoke tests/ole-file-move-smoke.cpp)
+target_include_directories(DeskTodoOleFileMoveSmoke PRIVATE src)
+target_link_libraries(DeskTodoOleFileMoveSmoke PRIVATE ole32 shell32 user32 kernel32)
+
 add_executable(DeskTodoOcrSmoke
     tests/ocr-smoke.cpp
-    src/Services/OcrService.cpp)
+    src/Services/OcrService.cpp
+    src/Services/PaddleOcrService.cpp)
 target_include_directories(DeskTodoOcrSmoke PRIVATE src)
+target_compile_definitions(DeskTodoOcrSmoke PRIVATE
+    DESKTODO_OCR_FIXTURE_DIR=L"${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
 target_link_libraries(DeskTodoOcrSmoke PRIVATE
-    gdi32 ole32 runtimeobject windowsapp user32 kernel32)
+    gdi32 ole32 runtimeobject windowsapp windowscodecs user32 kernel32)
+
+# setup-ocr.ps1 installs pinned offline OCR dependencies. Other builds retain
+# the enhanced Windows OCR fallback.
+set(OCR_DEPS "${CMAKE_CURRENT_SOURCE_DIR}/deps/ocr")
+set(ORT_INCLUDE "${OCR_DEPS}/onnxruntime-win-x64-1.31.0/include")
+set(OPENCV_ROOT "${OCR_DEPS}/opencv/build")
+if(EXISTS "${ORT_INCLUDE}/onnxruntime_cxx_api.h" AND
+   EXISTS "${OPENCV_ROOT}/x64/vc16/lib/opencv_world4120.lib" AND
+   EXISTS "${OCR_DEPS}/runtime/PP-OCRv6_rec_medium.onnx" AND
+   EXISTS "${OCR_DEPS}/runtime/PP-OCRv6_det_medium.onnx")
+    foreach(OCR_TARGET DeskTodo.Next DeskTodoOcrSmoke)
+        target_compile_definitions(${OCR_TARGET} PRIVATE DESKTODO_HAS_PADDLE_OCR=1)
+        target_include_directories(${OCR_TARGET} SYSTEM PRIVATE
+            "${ORT_INCLUDE}" "${OPENCV_ROOT}/include")
+        target_link_libraries(${OCR_TARGET} PRIVATE
+            "${OPENCV_ROOT}/x64/vc16/lib/opencv_world4120.lib" delayimp)
+        target_link_options(${OCR_TARGET} PRIVATE "/DELAYLOAD:opencv_world4120.dll")
+        add_custom_command(TARGET ${OCR_TARGET} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${OCR_DEPS}/runtime" "$<TARGET_FILE_DIR:${OCR_TARGET}>/ocr")
+    endforeach()
+    message(STATUS "Offline OCR: PP-OCRv6 medium with ONNX Runtime")
+else()
+    message(STATUS "Offline OCR models not installed; run DeskTodo.Next/setup-ocr.ps1 for PP-OCRv6")
+endif()
 
 add_executable(DeskTodoOcrResultSmoke
     tests/ocr-result-smoke.cpp
     src/Window/OcrResultWindow.cpp)
 target_include_directories(DeskTodoOcrResultSmoke PRIVATE src)
 target_link_libraries(DeskTodoOcrResultSmoke PRIVATE gdi32 user32 kernel32)
+
+add_executable(DeskTodoScreenshotOcrSmoke
+    tests/screenshot-ocr-smoke.cpp
+    src/Window/ScreenshotTool.cpp
+    src/Services/DesktopPathService.cpp)
+target_include_directories(DeskTodoScreenshotOcrSmoke PRIVATE src)
+target_link_libraries(DeskTodoScreenshotOcrSmoke PRIVATE
+    gdi32 msimg32 comdlg32 comctl32 shell32 ole32 windowscodecs advapi32 user32 kernel32)
+
+add_executable(DeskTodoLanTransferSmoke
+    tests/lan-transfer-smoke.cpp
+    src/Window/LanTransferWindow.cpp)
+target_include_directories(DeskTodoLanTransferSmoke PRIVATE src)
+target_link_libraries(DeskTodoLanTransferSmoke PRIVATE
+    shell32 ole32 uuid gdi32 user32 ws2_32 iphlpapi)
 
 add_executable(DeskTodoBlackHoleSmoke
     tests/black-hole-widget-smoke.cpp

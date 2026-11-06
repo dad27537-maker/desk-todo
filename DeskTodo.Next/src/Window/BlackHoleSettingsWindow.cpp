@@ -22,6 +22,9 @@ constexpr int IdleSecondsId = 7203;
 constexpr int SaveOnlyId = 7204;
 constexpr int DesignWidth = 920;
 constexpr int DesignHeight = 640;
+constexpr COLORREF GroupedBackground = RGB(242, 242, 247);
+constexpr COLORREF Surface = RGB(255, 255, 255);
+constexpr COLORREF TextColor = RGB(28, 28, 30);
 
 struct Preset { const wchar_t* name; std::array<float, 14> v; };
 constexpr Preset Presets[] = {
@@ -173,11 +176,11 @@ LRESULT CALLBACK Proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     }
     switch (m) {
     case WM_CREATE: {
-        c->backgroundBrush = CreateSolidBrush(RGB(247, 252, 250));
-        c->fieldBrush = CreateSolidBrush(RGB(255, 255, 255));
+        c->backgroundBrush = CreateSolidBrush(GroupedBackground);
+        c->fieldBrush = CreateSolidBrush(Surface);
         c->bodyFont = CreateFontW(-S(c, 16), 0, 0, 0, FW_NORMAL, FALSE, FALSE,
             FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+            CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI Variable Text");
         CreateWindowW(L"STATIC", L"黑洞动态背景设置", WS_CHILD | WS_VISIBLE,
             S(c, 24), S(c, 18), S(c, 300), S(c, 28), w, nullptr, nullptr, nullptr);
         CreateWindowW(L"STATIC", L"显示模式", WS_CHILD | WS_VISIBLE,
@@ -233,12 +236,13 @@ LRESULT CALLBACK Proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     }
     case WM_CTLCOLORSTATIC:
         SetBkMode(reinterpret_cast<HDC>(wp), TRANSPARENT);
-        SetTextColor(reinterpret_cast<HDC>(wp), RGB(19, 78, 74));
-        return reinterpret_cast<LRESULT>(c ? c->backgroundBrush : nullptr);
+        SetTextColor(reinterpret_cast<HDC>(wp), TextColor);
+        SetBkColor(reinterpret_cast<HDC>(wp), Surface);
+        return reinterpret_cast<LRESULT>(GetStockObject(NULL_BRUSH));
     case WM_CTLCOLOREDIT:
     case WM_CTLCOLORLISTBOX:
-        SetBkColor(reinterpret_cast<HDC>(wp), RGB(255, 255, 255));
-        SetTextColor(reinterpret_cast<HDC>(wp), RGB(19, 78, 74));
+        SetBkColor(reinterpret_cast<HDC>(wp), Surface);
+        SetTextColor(reinterpret_cast<HDC>(wp), TextColor);
         return reinterpret_cast<LRESULT>(c ? c->fieldBrush : nullptr);
     case WM_ERASEBKGND: {
         RECT client{};

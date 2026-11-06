@@ -5,6 +5,7 @@
 #include <Windows.h>
 #include <cstddef>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -27,6 +28,11 @@ struct DesktopIconAnchor {
 // remain untouched until that same stable monitor identity returns.
 class DesktopIconLayoutService {
 public:
+    using PositionReader = bool (*)(const std::wstring&, POINT&);
+    using PositionWriter = bool (*)(const std::wstring&, POINT);
+    explicit DesktopIconLayoutService(PositionReader reader = nullptr,
+                                      PositionWriter writer = nullptr)
+        : positionReader_(reader), positionWriter_(writer) {}
     bool Load();
     bool CaptureStable(
         const MonitorService::DisplayTopologySnapshot& topology,
@@ -41,6 +47,10 @@ public:
         const MonitorService::DisplayTopologySnapshot& topology,
         const std::vector<std::wstring>& excludedPaths = {});
     size_t ProcessTopologyRecoveryBatch(size_t maximumItems = 6);
+    // A confirmed native desktop drag/drop supersedes any queued old position.
+    bool RecordUserPlacement(
+        const MonitorService::DisplayTopologySnapshot& topology,
+        const std::wstring& path, POINT physicalPoint);
     bool HasPendingTopologyRecovery() const {
         return !pendingRestoreTargets_.empty();
     }
@@ -61,11 +71,19 @@ private:
     struct PendingRestoreTarget {
         std::wstring path;
         POINT point{};
+        bool completed = false;
     };
 
     bool Save() const;
+    bool ReadPosition(const std::wstring& path, POINT& point) const;
+    bool WritePosition(const std::wstring& path, POINT point) const;
+    PositionReader positionReader_ = nullptr;
+    PositionWriter positionWriter_ = nullptr;
     std::vector<DesktopIconAnchor> anchors_;
     std::vector<PendingRestoreTarget> pendingRestoreTargets_;
     size_t pendingRestoreCursor_ = 0;
     int pendingRestoreRounds_ = 0;
+    // Targets that Explorer has not confirmed. After bounded retry rounds,
+    // keep only these paths out of capture until verified or the next recovery.
+    std::unordered_map<std::wstring, POINT> unrestoredTargets_;
 };

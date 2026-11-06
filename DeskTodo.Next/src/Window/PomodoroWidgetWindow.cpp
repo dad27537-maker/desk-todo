@@ -15,14 +15,24 @@ constexpr wchar_t WindowClass[] = L"DeskTodoPomodoroWidget";
 constexpr int WindowWidth = 420;
 constexpr int WindowHeight = 260;
 constexpr int MinimumWindowWidth = 320;
-constexpr int MinimumWindowHeight = 204;
+// Keep the progress track and the action row separated even when the widget
+// is resized to its smallest supported height.
+constexpr int MinimumWindowHeight = 240;
 constexpr UINT_PTR TimerId = 1;
+
+constexpr COLORREF GroupedBackground = RGB(242, 242, 247);
+constexpr COLORREF Surface = RGB(255, 255, 255);
+constexpr COLORREF Text = RGB(28, 28, 30);
+constexpr COLORREF SecondaryText = RGB(142, 142, 147);
+constexpr COLORREF SystemBlue = RGB(0, 122, 255);
+constexpr COLORREF SystemBluePressed = RGB(0, 105, 225);
+constexpr COLORREF Divider = RGB(229, 229, 234);
 
 void ApplyCardShape(HWND window) {
     RECT client{};
     if (!window || !GetClientRect(window, &client)) return;
     HRGN region = CreateRoundRectRgn(0, 0, client.right,
-                                     client.bottom, 28, 28);
+                                     client.bottom, 24, 24);
     if (region) SetWindowRgn(window, region, TRUE);
 }
 
@@ -124,7 +134,7 @@ bool PomodoroWidgetWindow::EnsureWindow() {
         position.left, position.top, windowWidth, windowHeight,
         nullptr, nullptr, instance_, this);
     if (!window_) return false;
-    SetLayeredWindowAttributes(window_, 0, 226, LWA_ALPHA);
+    SetLayeredWindowAttributes(window_, 0, 244, LWA_ALPHA);
     ApplyCardShape(window_);
     if (timer_.running) SetTimer(window_, TimerId, 1000, nullptr);
     return true;
@@ -206,7 +216,7 @@ int PomodoroWidgetWindow::Scale(int value) const {
 void PomodoroWidgetWindow::Paint(HDC dc) {
     RECT client{};
     GetClientRect(window_, &client);
-    FillRounded(dc, client, 28, RGB(238, 234, 236));
+    FillRounded(dc, client, 24, GroupedBackground);
 
     HFONT titleFont = CreateFontW(-Scale(17), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
@@ -220,42 +230,52 @@ void PomodoroWidgetWindow::Paint(HDC dc) {
 
     DrawLabel(dc, L"专注计时", { Scale(20), Scale(13),
         client.right - Scale(80), Scale(38) }, titleFont,
-        RGB(45, 42, 47), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        Text, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     DrawLabel(dc, L"×", CloseButtonRect(), titleFont,
-              RGB(112, 107, 114), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+              SecondaryText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     wchar_t timeText[16]{};
     swprintf_s(timeText, L"%02d:%02d", timer_.remainingSeconds / 60,
                timer_.remainingSeconds % 60);
     DrawLabel(dc, timeText, { Scale(34), Scale(50),
         client.right - Scale(34), Scale(112) }, timerFont,
-              RGB(28, 27, 30), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+              Text, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     const std::wstring phase = timer_.focusPhase ? L"专注" : L"短休息";
     const std::wstring subtitle = phase + L" · 已完成 " +
         std::to_wstring(timer_.completedFocusSessions) + L" 轮";
     DrawLabel(dc, subtitle, { Scale(20), Scale(116),
         client.right - Scale(20), Scale(138) }, bodyFont,
-        RGB(112, 107, 114), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+         SecondaryText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     RECT progressTrack{ Scale(36), Scale(158),
                         client.right - Scale(36), Scale(164) };
-    FillRounded(dc, progressTrack, Scale(6), RGB(216, 211, 216));
+    FillRounded(dc, progressTrack, Scale(6), Divider);
     const int duration = PomodoroTimer::PhaseDuration(timer_);
     const double completed = 1.0 - static_cast<double>(timer_.remainingSeconds) / duration;
     RECT progress = progressTrack;
     progress.right = progress.left + static_cast<int>((progressTrack.right - progressTrack.left) *
         std::clamp(completed, 0.0, 1.0));
     if (progress.right > progress.left) {
-        FillRounded(dc, progress, Scale(6), RGB(151, 140, 153));
+        FillRounded(dc, progress, Scale(6), SystemBlue);
     }
 
-    FillRounded(dc, StartButtonRect(), Scale(12), RGB(91, 84, 94));
-    FillRounded(dc, ResetButtonRect(), Scale(12), RGB(220, 215, 220));
+    FillRounded(dc, StartButtonRect(), Scale(12),
+                timer_.running ? SystemBluePressed : SystemBlue);
+    FillRounded(dc, ResetButtonRect(), Scale(12), Surface);
+    HPEN border = CreatePen(PS_SOLID, 1, Divider);
+    HGDIOBJ oldPen = SelectObject(dc, border);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    const RECT reset = ResetButtonRect();
+    RoundRect(dc, reset.left, reset.top, reset.right, reset.bottom,
+              Scale(12), Scale(12));
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(border);
     DrawLabel(dc, timer_.running ? L"暂停" : L"开始", StartButtonRect(), bodyFont,
               RGB(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     DrawLabel(dc, L"重置", ResetButtonRect(), bodyFont,
-              RGB(65, 61, 68), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+              Text, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     DeleteObject(titleFont);
     DeleteObject(timerFont);

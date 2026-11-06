@@ -21,6 +21,7 @@ namespace {
 
 constexpr wchar_t CaptureClass[] = L"DeskTodoCaptureOverlay";
 constexpr wchar_t PinClass[] = L"DeskTodoPinnedCapture";
+constexpr UINT_PTR OcrTimerId = 0x4F43;
 
 RECT ToClientRect(const RECT& screenRect, const RECT& virtualScreen) {
     return { screenRect.left - virtualScreen.left, screenRect.top - virtualScreen.top,
@@ -83,6 +84,9 @@ constexpr const wchar_t* AnnotationFonts[] = {
     L"Microsoft YaHei UI", L"SimSun", L"Arial", L"Consolas"
 };
 constexpr UINT CaptureHintTimerId = 0xD710;
+constexpr wchar_t ScreenshotHotkeyRegistryPath[] = L"Software\\DeskTodo\\Screenshot";
+constexpr wchar_t ScreenshotHotkeyKeyValue[] = L"virtualKey";
+constexpr wchar_t ScreenshotHotkeyFlagsValue[] = L"flags";
 
 constexpr CaptureAction ToolbarActions[] = {
     CaptureAction::Cancel, CaptureAction::Pin, CaptureAction::Save,
@@ -211,6 +215,66 @@ void DrawCaptureIcon(HDC dc, RECT area, CaptureAction action, COLORREF color) {
     DeleteObject(pen);
 }
 
+bool IsValidScreenshotHotkey(const ScreenshotHotkeyConfig& config) {
+    return config.virtualKey != 0 &&
+        (config.flags & ~(HOTKEYF_SHIFT | HOTKEYF_CONTROL | HOTKEYF_ALT)) == 0;
+}
+
+}
+
+ScreenshotHotkeyConfig LoadScreenshotHotkeyConfig() {
+    ScreenshotHotkeyConfig config;
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, ScreenshotHotkeyRegistryPath, 0,
+                      KEY_QUERY_VALUE, &key) != ERROR_SUCCESS) {
+        return config;
+    }
+
+    DWORD value = 0;
+    DWORD type = 0;
+    DWORD bytes = sizeof(value);
+    if (RegQueryValueExW(key, ScreenshotHotkeyKeyValue, nullptr, &type,
+                         reinterpret_cast<BYTE*>(&value), &bytes) == ERROR_SUCCESS &&
+        type == REG_DWORD) {
+        config.virtualKey = value;
+    }
+    value = 0;
+    bytes = sizeof(value);
+    if (RegQueryValueExW(key, ScreenshotHotkeyFlagsValue, nullptr, &type,
+                         reinterpret_cast<BYTE*>(&value), &bytes) == ERROR_SUCCESS &&
+        type == REG_DWORD) {
+        config.flags = static_cast<BYTE>(value);
+    }
+    RegCloseKey(key);
+    if (!IsValidScreenshotHotkey(config)) return ScreenshotHotkeyConfig{};
+    return config;
+}
+
+bool SaveScreenshotHotkeyConfig(const ScreenshotHotkeyConfig& config) {
+    if (!IsValidScreenshotHotkey(config)) return false;
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, ScreenshotHotkeyRegistryPath, 0,
+                        nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) {
+        return false;
+    }
+    DWORD virtualKey = config.virtualKey;
+    DWORD flags = config.flags;
+    const LONG keyResult = RegSetValueExW(
+        key, ScreenshotHotkeyKeyValue, 0, REG_DWORD,
+        reinterpret_cast<const BYTE*>(&virtualKey), sizeof(virtualKey));
+    const LONG flagsResult = RegSetValueExW(
+        key, ScreenshotHotkeyFlagsValue, 0, REG_DWORD,
+        reinterpret_cast<const BYTE*>(&flags), sizeof(flags));
+    RegCloseKey(key);
+    return keyResult == ERROR_SUCCESS && flagsResult == ERROR_SUCCESS;
+}
+
+UINT ScreenshotHotkeyModifiers(const ScreenshotHotkeyConfig& config) {
+    UINT modifiers = 0;
+    if (config.flags & HOTKEYF_SHIFT) modifiers |= MOD_SHIFT;
+    if (config.flags & HOTKEYF_CONTROL) modifiers |= MOD_CONTROL;
+    if (config.flags & HOTKEYF_ALT) modifiers |= MOD_ALT;
+    return modifiers;
 }
 
 ScreenshotTool::ScreenshotTool(HINSTANCE instance) : instance_(instance) {}
@@ -266,6 +330,14 @@ bool ScreenshotTool::CaptureVirtualScreen() {
 }
 
 bool ScreenshotTool::StartCapture() {
+    if (ocrThread_.joinable()) {
+        if (ocrWork_ && !ocrWork_->complete.load()) {
+            if (captureWindow_) SetForegroundWindow(captureWindow_);
+            return false;
+        }
+        ocrThread_.join();
+        ocrWork_.reset();
+    }
     CaptureDiag(L"StartCapture: begin");
     SetCursor(LoadCursorW(nullptr, IDC_CROSS));
     GdiFlush();
@@ -279,6 +351,8 @@ bool ScreenshotTool::StartCapture() {
     }
     if (captureWindow_) DestroyWindow(captureWindow_);
     selection_ = {};
+    GetPhysicalCursorPos(&cursorPosition_);
+    cursorPositionValid_ = true;
     selecting_ = false;
     selectionReady_ = false;
     activeTool_ = CaptureAction::Move;
@@ -332,11 +406,14 @@ void ScreenshotTool::DestroyCaptureBuffer() {
 
 void ScreenshotTool::Destroy() {
     CancelCapture();
+    if (ocrThread_.joinable()) ocrThread_.join();
+    ocrWork_.reset();
     if (pinWindow_) { DestroyWindow(pinWindow_); pinWindow_ = nullptr; }
     if (pinnedBitmap_) { DeleteObject(pinnedBitmap_); pinnedBitmap_ = nullptr; }
 }
 
 void ScreenshotTool::CancelCapture() {
+    if (captureWindow_) KillTimer(captureWindow_, OcrTimerId);
     if (captureWindow_) KillTimer(captureWindow_, CaptureHintTimerId);
     if (GetCapture() == captureWindow_) ReleaseCapture();
     if (captureWindow_) { DestroyWindow(captureWindow_); captureWindow_ = nullptr; }
@@ -387,12 +464,109 @@ void ScreenshotTool::PaintCapture(HDC dc) {
         DrawTextW(dc, L"拖动选择截图区域 · Esc 或右键取消", -1, &hint,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
-    if (selectionReady_) PaintCaptureToolbar(dc);
     SelectObject(source, old);
     DeleteDC(source);
+    PaintMagnifier(dc);
+    if (selectionReady_) PaintCaptureToolbar(dc);
     if (dc != output) {
         BitBlt(output, 0, 0, client.right, client.bottom, dc, 0, 0, SRCCOPY);
     }
+}
+
+void ScreenshotTool::PaintMagnifier(HDC dc) {
+    if (!cursorPositionValid_ || !screenBitmap_) return;
+
+    constexpr int panelWidth = 220;
+    constexpr int panelHeight = 156;
+    constexpr int footerHeight = 28;
+    constexpr int zoom = 5;
+    const int screenWidth = virtualScreen_.right - virtualScreen_.left;
+    const int screenHeight = virtualScreen_.bottom - virtualScreen_.top;
+    const int imageWidth = panelWidth - 4;
+    const int imageHeight = panelHeight - footerHeight - 4;
+    const int sourceWidth = imageWidth / zoom;
+    const int sourceHeight = imageHeight / zoom;
+    if (screenWidth <= sourceWidth || screenHeight <= sourceHeight) return;
+
+    POINT cursor{
+        cursorPosition_.x - virtualScreen_.left,
+        cursorPosition_.y - virtualScreen_.top
+    };
+    cursor.x = (std::clamp<LONG>)(cursor.x, 0L, static_cast<LONG>(screenWidth - 1));
+    cursor.y = (std::clamp<LONG>)(cursor.y, 0L, static_cast<LONG>(screenHeight - 1));
+
+    POINT panelTopLeft{ cursor.x + 28, cursor.y - panelHeight - 28 };
+    if (panelTopLeft.x + panelWidth > screenWidth) panelTopLeft.x = cursor.x - panelWidth - 28;
+    if (panelTopLeft.y < 0) panelTopLeft.y = cursor.y + 28;
+    panelTopLeft.x = (std::clamp<LONG>)(panelTopLeft.x, 2L,
+                                        static_cast<LONG>(screenWidth - panelWidth - 2));
+    panelTopLeft.y = (std::clamp<LONG>)(panelTopLeft.y, 2L,
+                                        static_cast<LONG>(screenHeight - panelHeight - 2));
+
+    RECT panel{ panelTopLeft.x, panelTopLeft.y,
+                panelTopLeft.x + panelWidth, panelTopLeft.y + panelHeight };
+    RECT image{ panel.left + 2, panel.top + 2,
+                panel.right - 2, panel.bottom - footerHeight - 2 };
+    const int sourceLeft = static_cast<int>((std::clamp<LONG>)
+        (cursor.x - sourceWidth / 2, 0L, static_cast<LONG>(screenWidth - sourceWidth)));
+    const int sourceTop = static_cast<int>((std::clamp<LONG>)
+        (cursor.y - sourceHeight / 2, 0L, static_cast<LONG>(screenHeight - sourceHeight)));
+
+    HDC source = CreateCompatibleDC(dc);
+    COLORREF pixel = RGB(0, 0, 0);
+    if (source) {
+        HGDIOBJ oldSource = SelectObject(source, screenBitmap_);
+        pixel = GetPixel(source, cursor.x, cursor.y);
+        FillArea(dc, panel, RGB(245, 246, 248));
+        SetStretchBltMode(dc, HALFTONE);
+        SetBrushOrgEx(dc, 0, 0, nullptr);
+        StretchBlt(dc, image.left, image.top,
+                   image.right - image.left, image.bottom - image.top,
+                   source, sourceLeft, sourceTop, sourceWidth, sourceHeight,
+                   SRCCOPY);
+        SelectObject(source, oldSource);
+        DeleteDC(source);
+    } else {
+        FillArea(dc, panel, RGB(245, 246, 248));
+    }
+
+    const int centerX = (image.left + image.right) / 2;
+    const int centerY = (image.top + image.bottom) / 2;
+    HPEN crosshair = CreatePen(PS_SOLID, 1, RGB(45, 160, 230));
+    HGDIOBJ oldPen = SelectObject(dc, crosshair);
+    MoveToEx(dc, centerX - 14, centerY, nullptr);
+    LineTo(dc, centerX + 14, centerY);
+    MoveToEx(dc, centerX, centerY - 14, nullptr);
+    LineTo(dc, centerX, centerY + 14);
+    SelectObject(dc, oldPen);
+    DeleteObject(crosshair);
+
+    RECT footer{ panel.left + 2, panel.bottom - footerHeight - 2,
+                 panel.right - 2, panel.bottom - 2 };
+    FillArea(dc, footer, RGB(31, 37, 48));
+    wchar_t details[128]{};
+    swprintf_s(details, L"%ld,%ld  RGB(%u,%u,%u)  %dx",
+        cursorPosition_.x, cursorPosition_.y,
+        static_cast<unsigned>(GetRValue(pixel)),
+        static_cast<unsigned>(GetGValue(pixel)),
+        static_cast<unsigned>(GetBValue(pixel)), zoom);
+    HFONT font = CreateFontW(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    HGDIOBJ oldFont = SelectObject(dc, font);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, RGB(250, 251, 252));
+    DrawTextW(dc, details, -1, &footer, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(dc, oldFont);
+    DeleteObject(font);
+
+    HPEN border = CreatePen(PS_SOLID, 2, RGB(45, 160, 230));
+    oldPen = SelectObject(dc, border);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+    Rectangle(dc, panel.left, panel.top, panel.right, panel.bottom);
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(border);
 }
 
 void ScreenshotTool::PaintCaptureToolbar(HDC dc) {
@@ -438,8 +612,9 @@ void ScreenshotTool::PaintCaptureToolbar(HDC dc) {
 }
 
 void ScreenshotTool::PaintCaptureHint(HDC dc) {
-    const CaptureAction hintAction = hoveredHintAction_ != CaptureAction::None
-        ? hoveredHintAction_ : clickedHintAction_;
+    const bool recognizing = ocrWork_ && !ocrWork_->complete.load();
+    const CaptureAction hintAction = recognizing ? CaptureAction::Ocr :
+        (hoveredHintAction_ != CaptureAction::None ? hoveredHintAction_ : clickedHintAction_);
     if (hintAction == CaptureAction::None) return;
     const auto toolbar = CaptureToolbar::Build(selection_, virtualScreen_);
     size_t index = 0;
@@ -449,8 +624,8 @@ void ScreenshotTool::PaintCaptureHint(HDC dc) {
     if (index == std::size(ToolbarActions)) return;
 
     const RECT button = toolbar.buttons[index];
-    const wchar_t* label = CaptureActionHint(hintAction);
-    const int width = hintAction == CaptureAction::LatexOcr ? 124 : 92;
+    const wchar_t* label = recognizing ? L"正在识别，Esc 取消" : CaptureActionHint(hintAction);
+    const int width = recognizing ? 172 : (hintAction == CaptureAction::LatexOcr ? 124 : 92);
     LONG left = (button.left + button.right - width) / 2;
     LONG top = toolbar.bounds.top - 40;
     if (top < virtualScreen_.top + 4) top = toolbar.bounds.bottom + 8;
@@ -891,6 +1066,7 @@ HBITMAP ScreenshotTool::CreateSelectionBitmap() {
 void ScreenshotTool::ExecuteCaptureAction(CaptureAction action) {
     if (action == CaptureAction::None) return;
     if (action == CaptureAction::Cancel) { CancelCapture(); return; }
+    if (ocrWork_) return;
     if (action == CaptureAction::Move || action == CaptureAction::Arrow ||
         action == CaptureAction::Text || action == CaptureAction::Rectangle) {
         activeTool_ = action;
@@ -941,24 +1117,46 @@ void ScreenshotTool::ExecuteCaptureAction(CaptureAction action) {
         return;
     }
     if (action == CaptureAction::Ocr || action == CaptureAction::LatexOcr) {
-        std::wstring text;
-        std::wstring error;
-        const bool latex = action == CaptureAction::LatexOcr;
-        const bool recognized = latex
-            ? OcrService::RecognizeLatexBitmap(bitmap, text, error)
-            : OcrService::RecognizeBitmap(bitmap, text, error);
-        DeleteObject(bitmap);
-        if (!recognized) {
-            MessageBoxW(captureWindow_, error.c_str(),
-                        latex ? L"DeskTodo LaTeX OCR" : L"DeskTodo OCR",
-                        MB_OK | MB_ICONINFORMATION);
+        GdiFlush(); // Finish UI-thread drawing before the worker reads this bitmap.
+        ocrWork_ = std::make_unique<OcrWork>();
+        ocrWork_->latex = action == CaptureAction::LatexOcr;
+        OcrWork* work = ocrWork_.get();
+        try {
+            ocrThread_ = std::thread([work, bitmap] {
+                try {
+                    work->success = work->latex
+                        ? OcrService::RecognizeLatexBitmap(bitmap, work->text, work->error)
+                        : OcrService::RecognizeBitmap(bitmap, work->text, work->error);
+                } catch (...) {
+                    work->error = L"文字识别失败，请重新截取后重试。";
+                }
+                DeleteObject(bitmap);
+                work->complete = true;
+            });
+        } catch (...) {
+            DeleteObject(bitmap);
+            ocrWork_.reset();
+            MessageBoxW(captureWindow_, L"无法启动文字识别，请稍后重试。", L"DeskTodo OCR", MB_OK | MB_ICONERROR);
             return;
         }
-        CopyText(captureWindow_, text);
-        CancelCapture();
-        OcrResultWindow::Show(nullptr, text,
-            latex ? L"LaTeX 识别结果" : L"OCR 识别结果");
+        SetTimer(captureWindow_, OcrTimerId, 50, nullptr);
+        InvalidateRect(captureWindow_, nullptr, FALSE);
     }
+}
+
+void ScreenshotTool::FinishOcr() {
+    if (!ocrWork_ || !ocrWork_->complete.load()) return;
+    KillTimer(captureWindow_, OcrTimerId);
+    ocrThread_.join();
+    auto work = std::move(ocrWork_);
+    if (!work->success) {
+        InvalidateRect(captureWindow_, nullptr, FALSE);
+        MessageBoxW(captureWindow_, work->error.c_str(), L"DeskTodo OCR", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    CopyText(captureWindow_, work->text);
+    CancelCapture();
+    OcrResultWindow::Show(nullptr, work->text, work->latex ? L"LaTeX 识别结果" : L"OCR 识别结果");
 }
 
 void ScreenshotTool::CompleteCapture() {
@@ -1072,9 +1270,13 @@ LRESULT CALLBACK ScreenshotTool::CaptureWindowProc(HWND window, UINT message,
 }
 
 LRESULT ScreenshotTool::OnCaptureMessage(UINT message, WPARAM wp, LPARAM lp) {
+    if (ocrWork_ && ((message == WM_LBUTTONDOWN || message == WM_LBUTTONUP ||
+                     message == WM_MOUSEMOVE || message == WM_CHAR) ||
+                    (message == WM_KEYDOWN && wp != VK_ESCAPE))) return 0;
     switch (message) {
     case WM_SETCURSOR:
-        SetCursor(LoadCursorW(nullptr, selectionReady_ && !selecting_ ? IDC_ARROW : IDC_CROSS));
+        SetCursor(LoadCursorW(nullptr, ocrWork_ ? IDC_APPSTARTING :
+            (selectionReady_ && !selecting_ ? IDC_ARROW : IDC_CROSS)));
         return TRUE;
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: {
@@ -1087,6 +1289,8 @@ LRESULT ScreenshotTool::OnCaptureMessage(UINT message, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONDOWN: {
         POINT screenPoint{ GET_X_LPARAM(lp) + virtualScreen_.left,
                            GET_Y_LPARAM(lp) + virtualScreen_.top };
+        cursorPosition_ = screenPoint;
+        cursorPositionValid_ = true;
         {
             std::wstringstream stream;
             stream << L"CaptureMouseDown: x=" << screenPoint.x << L" y=" << screenPoint.y
@@ -1150,16 +1354,16 @@ LRESULT ScreenshotTool::OnCaptureMessage(UINT message, WPARAM wp, LPARAM lp) {
     }
     case WM_MOUSEMOVE: {
         POINT hoverPoint{ GET_X_LPARAM(lp) + virtualScreen_.left,
-                          GET_Y_LPARAM(lp) + virtualScreen_.top };
+                           GET_Y_LPARAM(lp) + virtualScreen_.top };
+        cursorPosition_ = hoverPoint;
+        cursorPositionValid_ = true;
         CaptureAction hoverAction = CaptureAction::None;
         if (selectionReady_ && !selecting_ && !movingSelection_ && !annotating_) {
             hoverAction = CaptureToolbar::HitTest(
                 CaptureToolbar::Build(selection_, virtualScreen_), hoverPoint);
         }
-        if (hoverAction != hoveredHintAction_) {
-            hoveredHintAction_ = hoverAction;
-            InvalidateRect(captureWindow_, nullptr, FALSE);
-        }
+        if (hoverAction != hoveredHintAction_) hoveredHintAction_ = hoverAction;
+        InvalidateRect(captureWindow_, nullptr, FALSE);
         if (movingSelection_) {
             POINT current{ GET_X_LPARAM(lp) + virtualScreen_.left,
                            GET_Y_LPARAM(lp) + virtualScreen_.top };
@@ -1269,6 +1473,7 @@ LRESULT ScreenshotTool::OnCaptureMessage(UINT message, WPARAM wp, LPARAM lp) {
         CancelCapture();
         return 0;
     case WM_TIMER:
+        if (wp == OcrTimerId) { FinishOcr(); return 0; }
         if (wp == CaptureHintTimerId) {
             KillTimer(captureWindow_, CaptureHintTimerId);
             clickedHintAction_ = CaptureAction::None;
@@ -1281,6 +1486,7 @@ LRESULT ScreenshotTool::OnCaptureMessage(UINT message, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_DESTROY:
         captureWindow_ = nullptr;
+        cursorPositionValid_ = false;
         return 0;
     }
     return DefWindowProcW(captureWindow_, message, wp, lp);

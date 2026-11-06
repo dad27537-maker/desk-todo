@@ -24,6 +24,7 @@ public:
     static bool TryRestorePathToDesktopPosition(
         const std::wstring& path, POINT physicalScreenPoint);
     static bool GetPathPositionOnDesktop(const std::wstring& path, POINT& physicalScreenPoint);
+    static std::vector<std::wstring> GetSelectedDesktopPaths();
     // Removes/restores only the desktop IShellView representation. The real
     // path and its attributes are never changed.
     static bool SetPathSuppressedOnDesktop(const std::wstring& path, bool suppressed);

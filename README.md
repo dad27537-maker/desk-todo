@@ -4,6 +4,16 @@ DeskTodo 是一款原生 Windows 桌面整理工具。它用可移动、可缩�
 
 当前主工程是 `DeskTodo.Next`，使用 C++17、Win32、Direct2D、WIC、Windows OCR、Winsock、OpenGL/D3D 桌面捕获等原生 Windows 技术构建，不依赖 .NET 运行时。
 
+## 2026-10-27 更新
+
+- 修复普通文件夹、快捷方式拖到第二屏后偶尔弹回的问题：已恢复的图标不再重复写入旧位置，原生桌面拖动结束后及时保存新落点。
+- 修复第二屏关闭、重开时旧恢复任务覆盖新布局的问题；临时投射到主屏的坐标不会覆盖离线屏幕锚点。
+- 改进负坐标、混合 DPI 和不同屏幕高度下的跨屏边界处理，避免格子被错误拉回另一块屏幕。
+- 文件夹实际搬移和 Shell 图标提取在后台执行；普通格子继续仅做逻辑归组。
+- 减少起拖和桌面巡检造成的闪烁，并为目录自包含、源目录清理失败及 OLE 拖放完成协议补充保护。
+- 正式程序统一使用 `DeskTodo.Next\build\Release\DeskTodo.Next.exe`；更新后从该路径启动即可。
+- Release 自动回归共 210 项检查，另有逻辑格子回归，全部通过。真实硬件断电、扩展坞重连和帧耗时仍需在目标设备验收。
+
 ## 功能概览
 
 ### 桌面格子
@@ -11,7 +21,7 @@ DeskTodo 是一款原生 Windows 桌面整理工具。它用可移动、可缩�
 - 创建、重命名、移动、缩放、折叠、锁定和解散多个格子。
 - 支持图标视图与列表视图，可按名称或类型排序，也可在格子内搜索。
 - 文件、文件夹、快捷方式和程序可以在桌面与格子之间自由拖入、拖出。
-- 采用仅作用于桌面视图的 Shell 过滤管理逻辑归组，不为普通项目额外生成 `.lnk`；右键刷新后格子项目不会闪现，普通“桌面”文件夹窗口仍能看到真实路径。
+- 通过 Shell 桌面视图管理逻辑归组，不为普通项目额外生成 `.lnk`，源文件与文件夹保留真实路径。
 - 旧版曾搬入私有格子目录的项目会在无同名冲突时安全迁回真实桌面路径；冲突或移动失败时保留原文件，绝不覆盖。
 - 自动处理同名文件和文件夹，避免格子项目与桌面新建项目发生名称冲突。
 - 支持文件夹映射：直接显示指定目录内容，不移动原目录文件。
@@ -27,13 +37,19 @@ DeskTodo 是一款原生 Windows 桌面整理工具。它用可移动、可缩�
 - 画笔、箭头、文字、矩形框标注。
 - 可分别设置标注粗细、字体、字号和颜色。
 - 工具栏使用图标显示，鼠标悬停时显示中文功能提示。
-- 支持 Windows OCR 文本识别和 LaTeX 识别结果窗口。
+- 优先使用本地 PP-OCRv6 medium 模型识别文字，支持中文、英文及混排；模型不可用时自动使用 Windows OCR。
+- 对小尺寸文字自动放大并保留笔画细节，处理深色背景和低对比度，保留多行文字的换行。
+- 识别在后台运行，截图界面保持响应，按 Esc 可取消；识别成功后复制文本并打开结果窗口。
+- 支持 LaTeX 识别结果窗口（由 OCR 文本转换，不是专用公式识别模型）。
 - 贴图窗口支持缩放、复制、另存为和关闭。
 
 ### 局域网快传
 
 - 电脑端显示二维码和临时访问地址，手机扫描后即可在浏览器选择文件。
 - 支持图片、视频、文档等任意文件以及多文件连续上传。
+- 电脑点击“发送到手机”多选文件，或将文件拖入快传窗口；手机网页自动显示文件列表，点击即可下载。
+- 手机下载保留原文件名，支持中文名称和大文件；下载进度可在浏览器下载列表查看，电脑端同时显示发送进度。
+- 发送列表可随时清空，关闭快传窗口后自动清空；仅所选文件可供手机下载。文件夹请先压缩后发送。
 - 手机端和电脑端均显示传输进度。
 - 可修改接收目录，也可直接打开接收文件夹。
 - 默认接收目录为 `%USERPROFILE%\Downloads\DeskTodo 快传`。
@@ -76,7 +92,7 @@ DeskTodo 是一款原生 Windows 桌面整理工具。它用可移动、可缩�
   - MSVC x64 工具链
   - Windows 10/11 SDK
   - CMake 3.15 或更高版本
-- OCR 需要系统安装可用的中文或英文 Windows OCR 语言包
+- PP-OCRv6 离线识别不依赖系统语言包；Windows OCR 后备引擎需要系统安装相应语言包
 - Everything 为可选依赖
 
 ## 获取源码
@@ -84,7 +100,7 @@ DeskTodo 是一款原生 Windows 桌面整理工具。它用可移动、可缩�
 仓库包含黑洞渲染子模块，克隆时需要同时初始化子模块：
 
 ```powershell
-git clone --recurse-submodules https://gitee.com/dada368/desk-todo.git
+git clone --recurse-submodules https://github.com/dad27537-maker/desk-todo.git
 cd desk-todo
 ```
 
@@ -95,6 +111,16 @@ git submodule update --init --recursive
 ```
 
 ## 构建
+
+启用高精度离线 OCR，先执行一次：
+
+```powershell
+.\DeskTodo.Next\setup-ocr.ps1
+```
+
+脚本会下载固定版本的 ONNX Runtime、OpenCV 和 PP-OCRv6 medium 检测/识别
+模型并校验 SHA256，存放在被 Git 忽略的 `DeskTodo.Next\deps\ocr` 下。
+首次准备需要联网；实际识别完全在本机进行，不上传截图。
 
 Visual Studio 2026：
 
@@ -117,6 +143,8 @@ DeskTodo.Next\build\Release\DeskTodo.Next.exe
 ```
 
 构建结束后，黑洞着色器、预设和运行资源会自动复制到 `Release` 目录。请保留这些资源与 EXE 的相对位置。
+启用 PP-OCRv6 后，构建也会生成 `Release\ocr`，分发程序时需同时保留这个目录
+（模型、原生 DLL 及许可证，约 210 MB）。未准备离线模型的源码构建会使用增强后的 Windows OCR。
 
 ## 运行
 
@@ -196,6 +224,10 @@ $release = ".\DeskTodo.Next\build\Release"
 
 & "$release\DeskTodoNativeSmoke.exe"
 & "$release\DeskTodoLogicalFenceSmoke.exe"
+& "$release\DeskTodoAsyncFileMoveSmoke.exe"
+& "$release\DeskTodoIconCacheSmoke.exe"
+& "$release\DeskTodoOleFileMoveSmoke.exe"
+& "$release\DeskTodoFenceRendererSmoke.exe"
 & "$release\DeskTodoBlackHoleSmoke.exe"
 & "$release\DeskTodoOcrSmoke.exe"
 ```
@@ -206,17 +238,23 @@ $release = ".\DeskTodo.Next\build\Release"
 - 文件名冲突处理、格子逻辑归组、桌面刷新持久化和游戏启动项约束
 - Todo 优先级、到期日、排序及旧版状态迁移
 - 被占用程序、文件夹和快捷方式的格子拖放
+- 第二屏新落点不被旧恢复轮次覆盖、普通目录及 `.lnk` 的落点持久化
+- 后台文件移动、图标提取、OLE 批次完成和 D2D 视口裁剪
 - 黑洞参数校验和进程控制
 - OCR 基础识别
 - 截图工具栏、格子菜单、桌面拖放和悬浮提示的交互探针
 
 当前多显示器修复的 Release 回归结果：
 
-- `DeskTodoNativeSmoke.exe`：119 项检查，0 失败。
+- `DeskTodoNativeSmoke.exe`：140 项检查，0 失败。
+- 异步文件移动、图标缓存、OLE 完成协议与 D2D 裁剪：共 70 项检查，0 失败。
 - `DeskTodoLogicalFenceSmoke.exe`：通过，包含显示器断开、重连和显示器标识变化恢复检查。
 - `git diff --check`：通过。
 
 `DeskTodoDesktopDragProbe.exe` 用于交互式桌面测试，需要在 DeskTodo 正在运行且使用真实 Windows 桌面的会话中执行。
+
+2026-10-27 的 DeskGo 静态分析、后台文件操作、拖动闪烁和热插拔修复见
+[实现与验证记录](docs/deskgo-movement-improvements.md)。
 
 ## 项目结构
 
@@ -242,7 +280,7 @@ DeskTodo/
 
 - 桌面格子使用全虚拟屏幕透明分层窗口渲染，格子之外保持鼠标穿透。
 - 程序采用 `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2`，布局按显示器稳定标识保存 96-DPI 相对锚点，并在运行时换算为物理像素。
-- 桌面项目通过 Windows Shell 桌面视图过滤和逻辑归组状态同步；过滤不会伪造文件删除事件，因此不会隐藏普通文件夹视图中的真实路径。
+- 桌面项目通过 Windows Shell 桌面视图抑制和逻辑归组状态同步；真实文件路径与属性保持不变。
 - 删除、打开、快捷方式和桌面位置等操作尽量使用 Windows Shell 原生接口。
 - 黑洞渲染器来自仓库中的 `ghostty-blackhole` 子模块，并作为 DeskTodo 的独立模式启动。
 
@@ -280,6 +318,8 @@ DeskTodo/
 - 按显示器稳定 ID、屏幕几何、工作区、DPI 和主副屏属性匹配布局。
 - 离线显示器的普通桌面图标单独停放，不与格子逻辑归组混淆，也不会被临时主屏投射覆盖。
 - 使用无等待的分批恢复队列，避免每个图标阻塞界面线程。
+- 成功恢复的图标立即退出重试；其他图标仍在恢复时，继续采集用户已调整的新位置。
+- 原生桌面拖动期间暂停恢复，放下后读取真实落点并保存；用户的新落点优先于旧恢复任务。
 - 拖动期间保持交互拓扑不变，恢复任务在拖动结束后继续执行。
 - 显示拓扑变化时释放并重建对应 Direct2D 渲染资源，保证吸附辅助线始终绑定当前渲染目标。
 - 番茄时钟和 Todo 组件在拉伸后统一进行布局、字体和控件区域缩放，并在窗口尺寸变化后完整重绘。

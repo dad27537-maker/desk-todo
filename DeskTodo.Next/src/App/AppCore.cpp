@@ -38,6 +38,17 @@ bool AppCore::Initialize(HINSTANCE hInst) {
     DesktopShellService::ReconcileSuppressedDesktopPaths();
     DesktopShellService::EndNativeDesktopUpdate();
 
+    // Keep the desktop launcher pointed at the current executable so Windows
+    // refreshes the bundled DeskTodo icon after an upgrade.
+    wchar_t executablePath[32768]{};
+    const DWORD executableLength = GetModuleFileNameW(
+        hInst, executablePath, static_cast<DWORD>(std::size(executablePath)));
+    if (executableLength > 0 &&
+        executableLength < std::size(executablePath)) {
+        ShellIntegrationService::EnsureDesktopShortcut(
+            std::wstring(executablePath, executableLength));
+    }
+
     return true;
 }
 
@@ -54,6 +65,9 @@ void AppCore::Run() {
 }
 
 void AppCore::Shutdown() {
+    // WM_QUIT/session teardown can bypass RequestExit's deferred close. Wait
+    // for the owned operation before restoring members from the same paths.
+    if (overlayWindow) overlayWindow->WaitForFileMoves();
     // 退出前恢复逻辑桌面成员的原生图标显示；真实文件路径保持不变。
     if (fenceManager) {
         fenceManager->ReleaseFenceItemsToDesktop();

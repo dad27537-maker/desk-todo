@@ -1,10 +1,15 @@
 #include "OcrService.h"
+#include "PaddleOcrService.h"
 
 #define _SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS
 #include <roapi.h>
 #include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Graphics.Imaging.h>
 #include <winrt/Windows.Media.Ocr.h>
+#include <winrt/Windows.Globalization.h>
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <cwctype>
 #include <string_view>
@@ -22,15 +27,59 @@ class RuntimeScope {
 public:
     RuntimeScope() : result_(RoInitialize(RO_INIT_SINGLETHREADED)) {}
     ~RuntimeScope() { if (SUCCEEDED(result_)) RoUninitialize(); }
-    bool Ready() const { return SUCCEEDED(result_) || result_ == S_FALSE; }
+    bool Ready() const { return SUCCEEDED(result_) || result_ == RPC_E_CHANGED_MODE; }
 private:
     HRESULT result_;
 };
 
+HBITMAP PrepareWindowsBitmap(HBITMAP source, int maximum) {
+    BITMAP details{};
+    if (!GetObjectW(source, sizeof(details), &details) || details.bmWidth <= 0 || details.bmHeight <= 0 ||
+        static_cast<unsigned long long>(details.bmWidth) * details.bmHeight > 64ull * 1024 * 1024) return nullptr;
+    constexpr int padding = 16;
+    double scale = (std::min)(4.0, (std::max)(1.0, 96.0 / (std::min)(details.bmWidth, details.bmHeight)));
+    scale = (std::min)(scale, (maximum - padding * 2.0) / (std::max)(details.bmWidth, details.bmHeight));
+    int width = (std::max)(1, static_cast<int>(std::round(details.bmWidth * scale)));
+    int height = (std::max)(1, static_cast<int>(std::round(details.bmHeight * scale)));
+    HDC screen = GetDC(nullptr);
+    HDC input = CreateCompatibleDC(screen), output = CreateCompatibleDC(screen);
+    HBITMAP prepared = CreateCompatibleBitmap(screen, width + padding * 2, height + padding * 2);
+    if (!input || !output || !prepared) {
+        if (input) DeleteDC(input);
+        if (output) DeleteDC(output);
+        if (prepared) DeleteObject(prepared);
+        ReleaseDC(nullptr, screen);
+        return nullptr;
+    }
+    auto oldInput = SelectObject(input, source), oldOutput = SelectObject(output, prepared);
+    COLORREF background = GetPixel(input, 0, 0);
+    if (background == CLR_INVALID) background = RGB(255, 255, 255);
+    HBRUSH brush = CreateSolidBrush(background);
+    RECT rect{0, 0, width + padding * 2, height + padding * 2};
+    FillRect(output, &rect, brush);
+    DeleteObject(brush);
+    SetStretchBltMode(output, HALFTONE);
+    SetBrushOrgEx(output, 0, 0, nullptr);
+    BOOL success = StretchBlt(output, padding, padding, width, height, input, 0, 0,
+                              details.bmWidth, details.bmHeight, SRCCOPY);
+    SelectObject(input, oldInput);
+    SelectObject(output, oldOutput);
+    DeleteDC(input);
+    DeleteDC(output);
+    ReleaseDC(nullptr, screen);
+    if (!success) { DeleteObject(prepared); return nullptr; }
+    return prepared;
 }
 
-bool OcrService::RecognizeBitmap(HBITMAP bitmap, std::wstring& text,
-                                 std::wstring& error) {
+struct ScopedBitmap {
+    HBITMAP handle = nullptr;
+    ~ScopedBitmap() { if (handle) DeleteObject(handle); }
+};
+
+}
+
+static bool RecognizeWindowsBitmap(HBITMAP bitmap, std::wstring& text,
+                                    std::wstring& error) {
     text.clear();
     error.clear();
     if (!bitmap) {
@@ -44,6 +93,13 @@ bool OcrService::RecognizeBitmap(HBITMAP bitmap, std::wstring& text,
     }
     const wchar_t* stage = L"bitmap";
     try {
+        ScopedBitmap prepared{PrepareWindowsBitmap(bitmap,
+            static_cast<int>(winrt::Windows::Media::Ocr::OcrEngine::MaxImageDimension()))};
+        if (!prepared.handle) {
+            error = L"无法准备 OCR 截图。";
+            return false;
+        }
+        bitmap = prepared.handle;
         BITMAP details{};
         if (!GetObjectW(bitmap, sizeof(details), &details) ||
             details.bmWidth <= 0 || details.bmHeight <= 0) {
@@ -67,6 +123,22 @@ bool OcrService::RecognizeBitmap(HBITMAP bitmap, std::wstring& text,
         if (rows != height) {
             error = L"无法读取截图像素。";
             return false;
+        }
+        const bool invert = (pixels[0] + pixels[1] + pixels[2]) < 3 * 128;
+        BYTE darkest = 255, lightest = 0;
+        for (size_t i = 0; i < pixels.size(); i += 4) {
+            BYTE gray = static_cast<BYTE>((29 * pixels[i] + 150 * pixels[i + 1] + 77 * pixels[i + 2]) >> 8);
+            if (invert) gray = 255 - gray;
+            pixels[i] = pixels[i + 1] = pixels[i + 2] = gray;
+            pixels[i + 3] = 255;
+            darkest = (std::min)(darkest, gray);
+            lightest = (std::max)(lightest, gray);
+        }
+        const int range = lightest - darkest;
+        if (range >= 8 && range < 160) {
+            for (size_t i = 0; i < pixels.size(); i += 4)
+                pixels[i] = pixels[i + 1] = pixels[i + 2] =
+                    static_cast<BYTE>((pixels[i] - darkest) * 255 / range);
         }
 
         stage = L"software-bitmap";
@@ -99,15 +171,32 @@ bool OcrService::RecognizeBitmap(HBITMAP bitmap, std::wstring& text,
         }
 
         stage = L"ocr-engine";
-        auto engine = winrt::Windows::Media::Ocr::OcrEngine::
-            TryCreateFromUserProfileLanguages();
-        if (!engine) {
+        using winrt::Windows::Media::Ocr::OcrEngine;
+        std::vector<OcrEngine> engines;
+        for (const wchar_t* tag : {L"zh-Hans-CN", L"zh-Hant-TW", L"en-US"}) {
+            auto language = winrt::Windows::Globalization::Language(tag);
+            if (OcrEngine::IsLanguageSupported(language)) {
+                auto engine = OcrEngine::TryCreateFromLanguage(language);
+                if (engine) engines.push_back(engine);
+            }
+        }
+        if (engines.empty()) {
+            auto engine = OcrEngine::TryCreateFromUserProfileLanguages();
+            if (engine) engines.push_back(engine);
+        }
+        if (engines.empty()) {
             error = L"系统未安装可用的中英文 OCR 语言包。";
             return false;
         }
         stage = L"recognize";
-        auto result = engine.RecognizeAsync(software).get();
-        text = result.Text().c_str();
+        for (const auto& engine : engines) {
+            auto result = engine.RecognizeAsync(software).get();
+            for (const auto& line : result.Lines()) {
+                if (!text.empty()) text += L"\r\n";
+                text += line.Text().c_str();
+            }
+            if (!text.empty()) break;
+        }
         if (text.empty()) {
             error = L"截图中没有识别到文字。";
             return false;
@@ -124,6 +213,20 @@ bool OcrService::RecognizeBitmap(HBITMAP bitmap, std::wstring& text,
         error = L"OCR 识别发生未知错误。";
         return false;
     }
+}
+
+bool OcrService::RecognizeBitmap(HBITMAP bitmap, std::wstring& text,
+                                 std::wstring& error, Backend backend) {
+    text.clear();
+    error.clear();
+    if (!bitmap) { error = L"截图位图无效。"; return false; }
+    std::wstring paddleError;
+    if (backend != Backend::Windows) {
+        if (PaddleOcrService::RecognizeBitmap(bitmap, text, paddleError)) return true;
+        if (backend == Backend::Paddle) { error = std::move(paddleError); return false; }
+    }
+    if (RecognizeWindowsBitmap(bitmap, text, error)) return true;
+    return false;
 }
 
 namespace {
