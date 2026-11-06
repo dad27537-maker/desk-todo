@@ -1,9 +1,6 @@
 #include "PomodoroWidgetWindow.h"
 
 #include "Services/DesktopPathService.h"
-#include "Services/AtomicFile.h"
-#include "Models/WidgetPlacement.h"
-#include <cstddef>
 
 #include <algorithm>
 #include <cmath>
@@ -86,7 +83,6 @@ void PomodoroWidgetWindow::ShowOrCreate() {
 
 void PomodoroWidgetWindow::Destroy() {
     if (!window_) return;
-    AdvanceTimer();
     SaveState(IsWindowVisible(window_) == TRUE);
     KillTimer(window_, TimerId);
     DestroyWindow(window_);
@@ -108,10 +104,30 @@ bool PomodoroWidgetWindow::EnsureWindow() {
     }
     if (!registered) return false;
 
-    const RECT position = WidgetPlacement::Restore(savedRect_, {WindowWidth, WindowHeight},
-        {MinimumWindowWidth, MinimumWindowHeight}, 28);
-    const int windowWidth = position.right - position.left;
-    const int windowHeight = position.bottom - position.top;
+    RECT position = savedRect_;
+    if (position.right <= position.left || position.bottom <= position.top) {
+        MONITORINFO monitor{ sizeof(monitor) };
+        GetMonitorInfoW(MonitorFromPoint({ 0, 0 }, MONITOR_DEFAULTTOPRIMARY), &monitor);
+        position.left = monitor.rcWork.right - WindowWidth - 28;
+        position.top = monitor.rcWork.bottom - WindowHeight - 28;
+        position.right = position.left + WindowWidth;
+        position.bottom = position.top + WindowHeight;
+    }
+
+    const int savedWidth = position.right - position.left;
+    const int savedHeight = position.bottom - position.top;
+    const int windowWidth = savedWidth >= MinimumWindowWidth
+        ? savedWidth : WindowWidth;
+    const int windowHeight = savedHeight >= MinimumWindowHeight
+        ? savedHeight : WindowHeight;
+
+    HMONITOR monitorHandle = MonitorFromRect(&position, MONITOR_DEFAULTTONULL);
+    if (!monitorHandle) {
+        MONITORINFO monitor{ sizeof(monitor) };
+        GetMonitorInfoW(MonitorFromPoint({ 0, 0 }, MONITOR_DEFAULTTOPRIMARY), &monitor);
+        position.left = monitor.rcWork.right - windowWidth - 28;
+        position.top = monitor.rcWork.bottom - windowHeight - 28;
+    }
 
     window_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED,
         WindowClass, L"番茄时钟", WS_POPUP | WS_THICKFRAME,
@@ -120,7 +136,6 @@ bool PomodoroWidgetWindow::EnsureWindow() {
     if (!window_) return false;
     SetLayeredWindowAttributes(window_, 0, 244, LWA_ALPHA);
     ApplyCardShape(window_);
-    lastTickMs_ = GetTickCount64();
     if (timer_.running) SetTimer(window_, TimerId, 1000, nullptr);
     return true;
 }
@@ -131,10 +146,6 @@ void PomodoroWidgetWindow::LoadState() {
     PersistedState persisted{};
     if (!stream.read(reinterpret_cast<char*>(&persisted), sizeof(persisted)) ||
         persisted.magic != 0x504F4D4F || persisted.version != 1) return;
-    const auto* timerBytes = reinterpret_cast<const unsigned char*>(&persisted.timer);
-    if (timerBytes[offsetof(PomodoroTimerState, running)] > 1 ||
-        timerBytes[offsetof(PomodoroTimerState, focusPhase)] > 1 ||
-        persisted.timer.completedFocusSessions < 0) return;
     savedRect_ = persisted.rect;
     timer_ = persisted.timer;
     shouldRestore_ = persisted.visible == TRUE;
@@ -152,27 +163,17 @@ void PomodoroWidgetWindow::SaveState(bool visible) {
     if (window_ && IsWindow(window_)) GetWindowRect(window_, &persisted.rect);
     else persisted.rect = savedRect_;
     savedRect_ = persisted.rect;
-    AtomicFile::Write((std::filesystem::path(GetAppDataPath()) / L"pomodoro-widget.dat").wstring(),
-        {reinterpret_cast<const char*>(&persisted), sizeof(persisted)});
+    std::ofstream stream(std::filesystem::path(GetAppDataPath()) / L"pomodoro-widget.dat",
+                         std::ios::binary | std::ios::trunc);
+    stream.write(reinterpret_cast<const char*>(&persisted), sizeof(persisted));
 }
 
 void PomodoroWidgetWindow::ToggleTimer() {
-    AdvanceTimer();
     timer_.running = !timer_.running;
-    lastTickMs_ = GetTickCount64();
     if (timer_.running) SetTimer(window_, TimerId, 1000, nullptr);
     else KillTimer(window_, TimerId);
     SaveState(true);
     InvalidateRect(window_, nullptr, FALSE);
-}
-
-bool PomodoroWidgetWindow::AdvanceTimer() {
-    if (!timer_.running || !window_) return false;
-    const ULONGLONG now = GetTickCount64();
-    const ULONGLONG elapsed = now - lastTickMs_ + remainderMs_;
-    lastTickMs_ = now;
-    remainderMs_ = elapsed % 1000;
-    return PomodoroTimer::Advance(timer_, elapsed / 1000);
 }
 
 RECT PomodoroWidgetWindow::StartButtonRect() const {
@@ -304,8 +305,11 @@ LRESULT PomodoroWidgetWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_NCCALCSIZE:
-        // Keep the proposed new rectangle; rgrc[1] is the old window bounds.
-        if (wp) return 0;
+        if (wp) {
+            auto* size = reinterpret_cast<NCCALCSIZE_PARAMS*>(lp);
+            size->rgrc[0] = size->rgrc[1];
+            return 0;
+        }
         break;
     case WM_NCHITTEST: {
         POINT point{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
@@ -354,7 +358,6 @@ LRESULT PomodoroWidgetWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
         const RECT startButton = StartButtonRect();
         const RECT resetButton = ResetButtonRect();
         if (PtInRect(&closeButton, clientPoint)) {
-            AdvanceTimer();
             ShowWindow(window_, SW_HIDE);
             timer_.running = false;
             KillTimer(window_, TimerId);
@@ -368,7 +371,6 @@ LRESULT PomodoroWidgetWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
         }
         if (PtInRect(&resetButton, clientPoint)) {
             PomodoroTimer::Reset(timer_);
-            remainderMs_ = 0;
             KillTimer(window_, TimerId);
             SaveState(true);
             InvalidateRect(window_, nullptr, FALSE);
@@ -409,14 +411,13 @@ LRESULT PomodoroWidgetWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_TIMER:
         if (wp == TimerId) {
-            const bool phaseChanged = AdvanceTimer();
+            const bool phaseChanged = PomodoroTimer::Tick(timer_);
             if (phaseChanged) MessageBeep(MB_ICONINFORMATION);
             if (timer_.remainingSeconds % 10 == 0 || phaseChanged) SaveState(true);
             InvalidateRect(window_, nullptr, FALSE);
         }
         return 0;
     case WM_CLOSE:
-        AdvanceTimer();
         ShowWindow(window_, SW_HIDE);
         timer_.running = false;
         KillTimer(window_, TimerId);

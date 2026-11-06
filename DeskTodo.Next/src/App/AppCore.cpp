@@ -58,7 +58,7 @@ void AppCore::ExecuteCommand(const std::wstring& command) {
 
 void AppCore::Run() {
     MSG msg = {};
-    while (GetMessage(&msg, nullptr, 0, 0) > 0) {
+    while (GetMessage(&msg, nullptr, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }

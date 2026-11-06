@@ -24,13 +24,7 @@ FenceRenderer::FenceRenderer() {}
 FenceRenderer::~FenceRenderer() { DestroyRenderTarget(); }
 
 bool FenceRenderer::EnsureFactories() {
-    if (s_refCount > 0) { ++s_refCount; return true; }
-    // Roll back partially initialized factories so a later attempt can retry.
-    s_refCount = 1;
-    struct FactoryGuard {
-        bool committed = false;
-        ~FactoryGuard() { if (!committed) FenceRenderer::ReleaseFactories(); }
-    } guard;
+    if (s_refCount++ > 0) return true;
 
     HRESULT hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &s_d2dFactory);
     if (FAILED(hr)) return false;
@@ -101,12 +95,10 @@ bool FenceRenderer::EnsureFactories() {
     s_inputFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     s_inputFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 
-    guard.committed = true;
     return true;
 }
 
 void FenceRenderer::ReleaseFactories() {
-    if (s_refCount <= 0) return;
     if (--s_refCount > 0) return;
     SafeRelease(s_inputFormat);
     SafeRelease(s_countFormat);
@@ -120,7 +112,6 @@ void FenceRenderer::ReleaseFactories() {
 }
 
 bool FenceRenderer::CreateRenderTarget(HDC hdc, int w, int h) {
-    if (!s_d2dFactory || !hdc || w <= 0 || h <= 0) return false;
     if (renderTarget && width == w && height == h)
         return true;
 
@@ -636,7 +627,6 @@ void FenceRenderer::DrawFence(const Fence& fence, bool isActive, bool isHovered,
 
     ID2D1SolidColorBrush* bgBrush = nullptr;
     renderTarget->CreateSolidColorBrush(D2D1::ColorF(r, g, b, a), &bgBrush);
-    if (!bgBrush) return;
     renderTarget->FillRoundedRectangle(&outerRect, bgBrush);
     SafeRelease(bgBrush);
 
@@ -673,7 +663,7 @@ void FenceRenderer::DrawFence(const Fence& fence, bool isActive, bool isHovered,
 
     D2D1_ROUNDED_RECT topRound = D2D1::RoundedRect(
         D2D1_RECT_F{ fx, fy, fx + fw, fy + titleH }, 7.0f, 7.0f);
-    if (titleBrush) renderTarget->FillRoundedRectangle(&topRound, titleBrush);
+    renderTarget->FillRoundedRectangle(&topRound, titleBrush);
     SafeRelease(titleBrush);
 
     if (titleTextBrush) {

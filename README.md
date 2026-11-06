@@ -2,13 +2,7 @@
 
 DeskTodo 是一款原生 Windows 桌面整理工具。它用可移动、可缩放的“格子”收纳桌面文件，并集成游戏容器、截图标注、OCR、局域网快传、番茄时钟、Todo 和黑洞动态效果。
 
-当前主工程是 `DeskTodo.Next`，使用 C++17、Win32、Direct2D、Direct3D 11、WIC、Windows OCR 和 Winsock 等原生 Windows 技术构建，不依赖 .NET 运行时。
-
-## 2026-11-04 全项目审核
-
-本轮覆盖当前原生主工程、构建与测试脚本，以及早期 Lua 示例。修复截图交互、桌面图标批量恢复、空布局持久化、文件覆盖保护、组件计时与窗口恢复、命令参数校验和黑洞空入口等问题。详细范围、回归结果与尚未验证的场景见[全项目审核记录](docs/full-code-review-2026-11-04.md)。
-
-在项目根目录执行 `./build.ps1` 构建主程序，执行 `./test.ps1` 构建并运行自动回归；已有测试程序时可用 `./test.ps1 -SkipBuild`。涉及 Shell、剪贴板和回环网络的测试需要正常 Windows 桌面环境。
+当前主工程是 `DeskTodo.Next`，使用 C++17、Win32、Direct2D、WIC、Windows OCR、Winsock、OpenGL/D3D 桌面捕获等原生 Windows 技术构建，不依赖 .NET 运行时。
 
 ## 2026-10-27 更新
 
@@ -37,11 +31,9 @@ DeskTodo 是一款原生 Windows 桌面整理工具。它用可移动、可缩�
 - 热插拔恢复期间会冻结当前拖动使用的显示器拓扑，避免坐标系中途变化导致吸附线消失、位置跳动或拖动卡顿。
 - 布局可备份为 `.bak` 文件并按需还原。
 
-### 截图、贴图、OCR 与多语言翻译
+### 截图、贴图与 OCR
 
 - 任意区域框选，支持取消、贴图、保存 PNG、复制到剪贴板。
-- 框选后可拖动四角或四边调整大小，使用移动工具拖动选区内部可移动位置。
-- 点击“保存”或按 `Ctrl + S` 可选择保存文件夹和文件名；取消保存后可继续调整和标注，本次运行内记住上次成功保存的文件夹。
 - 画笔、箭头、文字、矩形框标注。
 - 可分别设置标注粗细、字体、字号和颜色。
 - 工具栏使用图标显示，鼠标悬停时显示中文功能提示。
@@ -50,20 +42,12 @@ DeskTodo 是一款原生 Windows 桌面整理工具。它用可移动、可缩�
 - 识别在后台运行，截图界面保持响应，按 Esc 可取消；识别成功后复制文本并打开结果窗口。
 - 支持 LaTeX 识别结果窗口（由 OCR 文本转换，不是专用公式识别模型）。
 - 贴图窗口支持缩放、复制、另存为和关闭。
-- 框选后点击工具栏末尾的“文A”截图翻译按钮，可自动识别源语言，选择中文、英文、日文、韩文、法文等 22 种目标语言，查看截图预览及原文/译文对照并复制译文。
-- 截图翻译在 DeskTodo 内独立实现：本地 OCR → 文字翻译 → 原译文对照，不依赖安装或调用有道词典、有道云，也不需要账号或密钥。默认 Google 翻译，可切换 MyMemory；仅识别出的原文会发送给所选翻译服务，截图本身保留在本机。
-- 原文可以修改或粘贴；支持交换语言、复制原文/译文/双语对照。切换目标语言或翻译引擎会复用当前原文；切换源语言会使旧 OCR 缓存失效，但保留你编辑或粘贴的文字，点击“重新识别”可重新读取截图。识别成功但联网失败时仍保留原文；取消和关窗后旧结果不会写回。
-- 本地 PP-OCRv6 medium 支持中简繁、英文、日文和多种拉丁文字。韩文、俄文、阿拉伯文等其他源语言使用对应 Windows OCR 语言包；未安装时会提示安装，也可以直接粘贴原文翻译。22 种翻译语言不代表所有系统均已安装对应 OCR 包。
-- 在线翻译受网络与服务限制：Google 使用其免密钥客户端接口，服务地址或限制可能变化；MyMemory 使用[公开查询 API](https://mymemory.translated.net/doc/spec.php)，匿名额度目前为[每日 5000 字符](https://mymemory.translated.net/doc/usagelimits.php)，长文本按 UTF-8 字节边界分段。引擎不可用时可手动切换。当前不包含离线机器翻译模型。
 
 ### 局域网快传
 
 - 电脑端显示二维码和临时访问地址，手机扫描后即可在浏览器选择文件。
 - 支持图片、视频、文档等任意文件以及多文件连续上传。
 - 电脑点击“发送到手机”多选文件，或将文件拖入快传窗口；手机网页自动显示文件列表，点击即可下载。
-- 支持双向文本互传：手机在扫码网页粘贴文字并点击“发送到电脑”，电脑可预览并点击“复制手机文本”；电脑复制文字后点击“发送剪贴板到手机”，手机网页自动显示，可一键复制。
-- 文本发送由手动点击触发，单次最多 1 MB，支持中文、表情和多行内容；收到的文字不会自动覆盖剪贴板。“清空文本”或关闭快传窗口会清空本次收发内容。
-- 部分手机浏览器会限制局域网 HTTP 页面的剪贴板权限；一键复制不可用时，可在接收文本框中长按、全选并复制。
 - 手机下载保留原文件名，支持中文名称和大文件；下载进度可在浏览器下载列表查看，电脑端同时显示发送进度。
 - 发送列表可随时清空，关闭快传窗口后自动清空；仅所选文件可供手机下载。文件夹请先压缩后发送。
 - 手机端和电脑端均显示传输进度。
@@ -75,9 +59,9 @@ DeskTodo 是一款原生 Windows 桌面整理工具。它用可移动、可缩�
 
 ### 黑洞动态效果
 
-- 使用项目内的 Direct3D 11 渲染后端，通过独立渲染进程叠加在桌面和其他软件上；不再调用参考仓库中的空入口。
+- 集成 `ghostty-blackhole` 渲染代码，通过独立渲染进程叠加在桌面和其他软件上。
 - 黑洞会产生引力透镜、吸积盘、光束、多普勒和 Bloom 效果。
-- 支持在各显示器工作区之间切换，并按平滑轨迹移动。
+- 支持多屏范围与随机移动轨迹。
 - 支持“始终显示”和“空闲检测”两种模式。
 - 内置多种预设，并可调整色温、倾角、旋转、半径、不透明度、亮度、曝光、速度等参数。
 - 设置保存后可再次启动使用，也可以从托盘菜单立即关闭效果。
@@ -113,7 +97,7 @@ DeskTodo 是一款原生 Windows 桌面整理工具。它用可移动、可缩�
 
 ## 获取源码
 
-仓库保留黑洞参考子模块；如需一并查看参考资料，可以初始化子模块。当前主程序构建不依赖其中的占位实现：
+仓库包含黑洞渲染子模块，克隆时需要同时初始化子模块：
 
 ```powershell
 git clone --recurse-submodules https://github.com/dad27537-maker/desk-todo.git
@@ -217,7 +201,6 @@ DeskTodo.Next.exe --exit
 ├─ todo-widget.dat             Todo 状态
 ├─ pomodoro-widget.dat         番茄时钟状态
 ├─ lan-transfer-folder.txt     快传接收目录
-├─ translation-preferences.json 翻译引擎与语言偏好（不含截图、原文、译文或凭据）
 └─ Screenshots\                图片目录不可用时的截图回退目录
 ```
 
@@ -226,7 +209,7 @@ DeskTodo.Next.exe --exit
 
 其他位置：
 
-- 截图保存窗口初始建议位置为 `%USERPROFILE%\Pictures\DeskTodo Screenshots`，可自行选择其他文件夹。
+- 截图默认保存到 `%USERPROFILE%\Pictures\DeskTodo Screenshots`。
 - 黑洞设置保存在 `HKEY_CURRENT_USER\Software\DeskTodo\BlackHole`。
 - 测试时可通过 `DESKTODO_DATA_ROOT` 环境变量把配置写入隔离目录。
 
@@ -247,10 +230,6 @@ $release = ".\DeskTodo.Next\build\Release"
 & "$release\DeskTodoFenceRendererSmoke.exe"
 & "$release\DeskTodoBlackHoleSmoke.exe"
 & "$release\DeskTodoOcrSmoke.exe"
-& "$release\DeskTodoTranslationSmoke.exe"
-& "$release\DeskTodoTranslationWindowSmoke.exe"
-# 可选联网检查，只发送合成测试图片在本机识别出的测试句
-& "$release\DeskTodoTranslationLiveSmoke.exe" --live
 ```
 
 测试范围包括：
@@ -263,7 +242,6 @@ $release = ".\DeskTodo.Next\build\Release"
 - 后台文件移动、图标提取、OLE 批次完成和 D2D 视口裁剪
 - 黑洞参数校验和进程控制
 - OCR 基础识别
-- 截图翻译的本地 OCR 交接、UTF-8 分段、响应解析、错误处理、偏好保存，以及原文修改、OCR 复用、语言交换、取消、复制和关闭窗口；翻译偏好测试默认使用独立临时目录，也可通过 `DESKTODO_DATA_ROOT` 指定测试目录，窗口复制测试需要真实 Windows 桌面剪贴板权限
 - 截图工具栏、格子菜单、桌面拖放和悬浮提示的交互探针
 
 当前多显示器修复的 Release 回归结果：
@@ -278,10 +256,6 @@ $release = ".\DeskTodo.Next\build\Release"
 2026-10-27 的 DeskGo 静态分析、后台文件操作、拖动闪烁和热插拔修复见
 [实现与验证记录](docs/deskgo-movement-improvements.md)。
 
-2026-10-28 新增截图翻译的有道静态分析依据与范围见
-[有道截图翻译分析](docs/youdao-screenshot-translation-analysis.md)。
-独立实现、使用方式及真实联网验证见[截图翻译说明](docs/screenshot-translation.md)。
-
 ## 项目结构
 
 ```text
@@ -292,10 +266,10 @@ DeskTodo/
 │  ├─ src/Rendering/              Direct2D 格子渲染
 │  ├─ src/Services/               文件、Shell、配置、OCR、布局服务
 │  ├─ src/Window/                 设置、截图、快传和组件窗口
-│  ├─ src/Components/BlackHole/   黑洞控制与 Direct3D 11 渲染
+│  ├─ src/Components/BlackHole/   黑洞控制与兼容层
 │  └─ tests/                      原生与交互测试
 ├─ reference_repos/
-│  └─ ghostty-blackhole-main-old/ 历史参考子模块（不参与构建）
+│  └─ ghostty-blackhole-main-old/ 黑洞渲染子模块
 ├─ docs/                          设计、审计和黑洞文档
 ├─ design-system/                 DeskTodo 视觉设计规范
 ├─ widgets/                       早期组件脚本与参考资料
@@ -308,7 +282,7 @@ DeskTodo/
 - 程序采用 `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2`，布局按显示器稳定标识保存 96-DPI 相对锚点，并在运行时换算为物理像素。
 - 桌面项目通过 Windows Shell 桌面视图抑制和逻辑归组状态同步；真实文件路径与属性保持不变。
 - 删除、打开、快捷方式和桌面位置等操作尽量使用 Windows Shell 原生接口。
-- 黑洞使用项目内的 Direct3D 11 后端，作为 DeskTodo 的独立模式启动；设置保存在用户注册表中。
+- 黑洞渲染器来自仓库中的 `ghostty-blackhole` 子模块，并作为 DeskTodo 的独立模式启动。
 
 ## 安全提示
 
@@ -343,7 +317,7 @@ DeskTodo/
 - 对显示器拓扑进行多次采样，只有拓扑稳定后才开始恢复。
 - 按显示器稳定 ID、屏幕几何、工作区、DPI 和主副屏属性匹配布局。
 - 离线显示器的普通桌面图标单独停放，不与格子逻辑归组混淆，也不会被临时主屏投射覆盖。
-- 一次向 Explorer 提交整组图标坐标，随后按定时器分批核验；避免逐项恢复时相互挤占空位，导致启动后下移一行。
+- 使用无等待的分批恢复队列，避免每个图标阻塞界面线程。
 - 成功恢复的图标立即退出重试；其他图标仍在恢复时，继续采集用户已调整的新位置。
 - 原生桌面拖动期间暂停恢复，放下后读取真实落点并保存；用户的新落点优先于旧恢复任务。
 - 拖动期间保持交互拓扑不变，恢复任务在拖动结束后继续执行。

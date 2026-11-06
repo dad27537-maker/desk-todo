@@ -551,21 +551,6 @@ int wmain(int argc, wchar_t** argv) {
         corruptManagerAfter == corruptManagerText;
     SetEnvironmentVariableW(L"DESKTODO_DATA_ROOT", nullptr);
 
-    const auto emptyRoot = root / L"empty-config";
-    SetEnvironmentVariableW(L"DESKTODO_DATA_ROOT", emptyRoot.c_str());
-    SetEnvironmentVariableW(L"DESKTODO_DESKTOP_ROOT", desktop.c_str());
-    SetEnvironmentVariableW(L"DESKTODO_PUBLIC_DESKTOP_ROOT", publicDesktop.c_str());
-    ConfigService emptyConfig;
-    emptyConfig.EnsureDirectories();
-    emptyConfig.SaveFences({});
-    bool emptyLayoutPreserved = false;
-    {
-        FenceManager emptyManager;
-        emptyLayoutPreserved = emptyManager.Initialize(GetModuleHandleW(nullptr)) && emptyManager.GetAllFences().empty();
-    }
-    SetEnvironmentVariableW(L"DESKTODO_DATA_ROOT", nullptr);
-    SetEnvironmentVariableW(L"DESKTODO_DESKTOP_ROOT", nullptr);
-    SetEnvironmentVariableW(L"DESKTODO_PUBLIC_DESKTOP_ROOT", nullptr);
     CoUninitialize();
     CloseHandle(lock);
     fs::remove_all(root, error);
@@ -587,7 +572,7 @@ int wmain(int argc, wchar_t** argv) {
         reconnectRestoresRelativePlacement && oneSourceAfterOrganize &&
         replacementMonitorRecovered && removedPrimaryAnchorPreserved &&
         releasedOnExit && legacyHiddenAttributesCleared &&
-        corruptManagerPreserved && emptyLayoutPreserved && shortcutCount == 0;
+        corruptManagerPreserved && shortcutCount == 0;
     std::wcout << L"logical fence locked-file smoke: " << (ok ? L"PASS" : L"FAIL")
                << L", desktop-visible=" << stayedVisibleInDesktopFolder
                << L", idempotent=" << (lockedMembershipCount == 1)
@@ -613,7 +598,6 @@ int wmain(int argc, wchar_t** argv) {
                << L", exit-restored=" << releasedOnExit
                << L", legacy-hidden-cleared=" << legacyHiddenAttributesCleared
                << L", corrupt-config-preserved=" << corruptManagerPreserved
-               << L", empty-layout-preserved=" << emptyLayoutPreserved
                << L", shortcuts=" << shortcutCount << std::endl;
     return ok ? 0 : 20;
 }

@@ -45,7 +45,7 @@ function loadConfig()
     workMin           = tonumber(storage.get("workMin"))           or 25
     breakMin          = tonumber(storage.get("breakMin"))          or 5
     longBreakMin      = tonumber(storage.get("longBreakMin"))      or 15
-    longBreakInterval = math.max(1, math.floor(tonumber(storage.get("longBreakInterval")) or 4))
+    longBreakInterval = tonumber(storage.get("longBreakInterval")) or 4
     workColor         = tonumber(storage.get("workColor"))         or DEFAULT_WORK_COLOR
     breakColor        = tonumber(storage.get("breakColor"))        or DEFAULT_BREAK_COLOR
     trackColor        = tonumber(storage.get("trackColor"))        or DEFAULT_TRACK_COLOR

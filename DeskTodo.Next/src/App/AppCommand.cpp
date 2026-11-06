@@ -3,7 +3,6 @@
 #include <Windows.h>
 #include <shellapi.h>
 #include <vector>
-#include <cstring>
 
 namespace {
 
@@ -75,9 +74,9 @@ std::wstring CurrentDesktopScope() {
 
 namespace AppCommand {
 
-std::wstring ParseCommandLine(const wchar_t* commandLine) {
+std::wstring ParseCommandLine() {
     int argc = 0;
-    LPWSTR* argv = CommandLineToArgvW(commandLine ? commandLine : GetCommandLineW(), &argc);
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!argv) return Show;
 
     std::wstring command = Show;
@@ -87,19 +86,6 @@ std::wstring ParseCommandLine(const wchar_t* commandLine) {
     }
     LocalFree(argv);
     return command.empty() ? Show : command;
-}
-
-bool DecodeForwardedCommand(const void* bytes, size_t size, std::wstring& command) {
-    command.clear();
-    if (!bytes || size < sizeof(wchar_t) || size > 4096 || size % sizeof(wchar_t)) return false;
-    command.resize(size / sizeof(wchar_t));
-    std::memcpy(command.data(), bytes, size);
-    if (command.back() != L'\0') { command.clear(); return false; }
-    command.pop_back();
-    if (command.empty() || command.find(L'\0') != std::wstring::npos) {
-        command.clear(); return false;
-    }
-    return true;
 }
 
 std::wstring SingleInstanceMutexName() {
@@ -139,7 +125,7 @@ bool SendToRunningInstance(const std::wstring& command) {
             DWORD_PTR result = 0;
             return SendMessageTimeoutW(
                        window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&data),
-                       SMTO_ABORTIFHUNG | SMTO_BLOCK, 3000, &result) != 0 && result != 0;
+                       SMTO_ABORTIFHUNG | SMTO_BLOCK, 3000, &result) != 0;
         }
         Sleep(100);
     }

@@ -313,7 +313,7 @@ bool FenceManager::Initialize(HINSTANCE hInstance) {
     const bool needsLegacySuppressionUpgrade = loadedVersion < 8;
     configWritesEnabled = true;
     bool generatedDefaults = false;
-    if (loadResult.status == ConfigLoadStatus::Missing) {
+    if (fences.empty()) {
         GenerateDefaultFences();
         generatedDefaults = true;
     } else if (loadedVersion < 4) {
@@ -665,9 +665,7 @@ bool FenceManager::Initialize(HINSTANCE hInstance) {
     iconCache = std::make_unique<IconCache>();
     iconCache->Initialize();
 
-    // A user may intentionally dissolve every fence. An empty, valid layout
-    // is still a successful initialization and must keep the tray available.
-    return true;
+    return !fences.empty();
 }
 
 void FenceManager::Shutdown() {
@@ -1405,13 +1403,12 @@ bool FenceManager::RestoreLayout(const std::wstring& backupPath) {
     ApplyDisplayTopology(MonitorService::CaptureTopology());
     RefreshAllFenceItems();
     SaveConfig();
-    std::vector<std::pair<std::wstring, POINT>> positions;
     for (const auto& record : desktopSnapshot) {
         if (std::filesystem::exists(record.path)) {
-            positions.emplace_back(record.path, record.position);
+            DesktopShellService::RestorePathToDesktopPosition(
+                record.path, record.position);
         }
     }
-    DesktopShellService::TryRestoreDesktopPositions(positions);
     DesktopShellService::RefreshDesktop();
     for (const auto& fence : fences) SyncLogicalDesktopPositions(fence.id);
     return true;

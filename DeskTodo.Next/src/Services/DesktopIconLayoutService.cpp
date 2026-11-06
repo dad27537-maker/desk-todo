@@ -215,7 +215,6 @@ bool DesktopIconLayoutService::Load() {
     pendingRestoreTargets_.clear();
     pendingRestoreCursor_ = 0;
     pendingRestoreRounds_ = 0;
-    pendingRestoreBatchSubmitted_ = false;
     unrestoredTargets_.clear();
     const auto statePath = StatePath();
     std::error_code existenceError;
@@ -518,7 +517,6 @@ bool DesktopIconLayoutService::BeginTopologyRecovery(
     pendingRestoreTargets_.clear();
     pendingRestoreCursor_ = 0;
     pendingRestoreRounds_ = 0;
-    pendingRestoreBatchSubmitted_ = false;
     unrestoredTargets_.clear();
 
     const auto excluded = BuildPathSet(excludedPaths);
@@ -610,23 +608,6 @@ size_t DesktopIconLayoutService::ProcessTopologyRecoveryBatch(
     size_t maximumItems) {
     if (maximumItems == 0 || pendingRestoreTargets_.empty()) return 0;
 
-    const bool useBatch = positionBatchWriter_ || !positionWriter_;
-    if (useBatch && !pendingRestoreBatchSubmitted_) {
-        std::vector<std::pair<std::wstring, POINT>> positions;
-        for (const auto& target : pendingRestoreTargets_) {
-            if (!target.completed && IsDesktopFilesystemPath(target.path) &&
-                GetFileAttributesW(target.path.c_str()) != INVALID_FILE_ATTRIBUTES) {
-                positions.emplace_back(target.path, target.point);
-            }
-        }
-        if (positionBatchWriter_) positionBatchWriter_(positions);
-        else DesktopShellService::TryRestoreDesktopPositions(positions);
-        pendingRestoreBatchSubmitted_ = true;
-        // Give Explorer a message-loop turn before verifying the layout.
-        // Verification remains bounded by maximumItems on subsequent ticks.
-        return pendingRestoreTargets_.size();
-    }
-
     size_t processed = 0;
     while (processed < maximumItems &&
            pendingRestoreCursor_ < pendingRestoreTargets_.size()) {
@@ -645,7 +626,7 @@ size_t DesktopIconLayoutService::ProcessTopologyRecoveryBatch(
             std::abs(current.x - target.point.x) <= 1 &&
             std::abs(current.y - target.point.y) <= 1;
         const bool restored = alreadyPlaced ||
-            (!useBatch && WritePosition(target.path, target.point));
+            WritePosition(target.path, target.point);
         if (restored) {
             target.completed = true;
             unrestoredTargets_.erase(PathKey(target.path));
@@ -661,7 +642,6 @@ size_t DesktopIconLayoutService::ProcessTopologyRecoveryBatch(
             [](const PendingRestoreTarget& target) { return !target.completed; });
         if (pendingRestoreRounds_ > 0 && unfinished) {
             pendingRestoreCursor_ = 0;
-            pendingRestoreBatchSubmitted_ = false;
         } else {
             pendingRestoreTargets_.clear();
             pendingRestoreCursor_ = 0;

@@ -71,8 +71,6 @@ private:
     double pinScale_ = 1.0;
     std::wstring lastSavedPath_;
     bool lastSaveSucceeded_ = false;
-    bool saving_ = false;
-    std::wstring lastSaveDirectory_;
     CaptureAction activeTool_ = CaptureAction::Move;
     std::vector<Stroke> strokes_;
     std::vector<ArrowMark> arrows_;
@@ -80,7 +78,6 @@ private:
     std::vector<RectangleMark> rectangles_;
     bool annotating_ = false;
     bool movingSelection_ = false;
-    unsigned resizingEdges_ = 0;
     POINT actionStart_{};
     RECT moveStartSelection_{};
     std::wstring pendingText_;
@@ -114,7 +111,6 @@ private:
     void ExecuteCaptureAction(CaptureAction action);
     bool HandlePropertyClick(POINT screenPoint);
     bool IsStyleToolActive() const;
-    void UpdateCaptureCursor(POINT screenPoint);
     bool CopyToClipboard(HBITMAP bitmap);
     bool SavePng(HBITMAP bitmap, const std::wstring& path);
     bool SaveBitmapAs(HBITMAP bitmap, HWND owner);

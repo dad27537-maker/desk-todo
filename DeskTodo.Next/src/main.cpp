@@ -4,18 +4,26 @@
 #include "App/AppCore.h"
 #include "App/AppCommand.h"
 
-#include "Components/BlackHole/BlackHoleRenderer.h"
+int GhosttyBlackHoleMain(int argc, char* argv[]);
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
-    const std::wstring command = AppCommand::ParseCommandLine();
-    if (command == L"blackhole-render" || command == L"render") {
-        return RunBlackHoleRenderer();
+    const char* rawCommand = GetCommandLineA();
+    if (strstr(rawCommand, "--blackhole-render") != nullptr ||
+        strstr(rawCommand, " --render") != nullptr) {
+        char app[] = "DeskTodo.Next.exe";
+        char mode[] = "--render";
+        char* argv[] = { app, mode, nullptr };
+        return GhosttyBlackHoleMain(2, argv);
     }
-    if (command == L"blackhole-monitor") {
-        return RunBlackHoleRenderer();
+    if (strstr(rawCommand, "--blackhole-monitor") != nullptr) {
+        char app[] = "DeskTodo.Next.exe";
+        char mode[] = "--monitor";
+        char* argv[] = { app, mode, nullptr };
+        return GhosttyBlackHoleMain(2, argv);
     }
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
+    const std::wstring command = AppCommand::ParseCommandLine();
     const std::wstring singleInstanceMutexName =
         AppCommand::SingleInstanceMutexName();
     HANDLE singleInstance = CreateMutexW(

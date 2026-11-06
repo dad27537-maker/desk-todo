@@ -420,10 +420,11 @@ bool TryFindDesktopChild(IFolderView* folderView, const std::wstring& path,
 
     // Fast path for the overwhelmingly common unambiguous leaf name.
     std::wstring fileName = std::filesystem::path(path).filename().wstring();
+    ULONG eaten = 0;
     ULONG attributes = 0;
     PITEMID_CHILD parsed = nullptr;
     if (!fileName.empty() && SUCCEEDED(desktopFolder->ParseDisplayName(
-            nullptr, nullptr, fileName.data(), nullptr, &parsed, &attributes)) && parsed) {
+            nullptr, nullptr, fileName.data(), &eaten, &parsed, &attributes)) && parsed) {
         if (childMatchesPath(parsed)) {
             *childOut = parsed;
             return true;
@@ -838,7 +839,7 @@ bool DesktopShellService::PositionPathOnDesktop(const std::wstring& path, POINT 
             RECT clientRect{};
             positioned = requested &&
                 SUCCEEDED(folderView->GetItemPosition(child, &actual)) &&
-                listView && GetClientRect(listView, &clientRect) && PtInRect(&clientRect, actual);
+                GetClientRect(listView, &clientRect) && PtInRect(&clientRect, actual);
             CoTaskMemFree(child);
         }
 
@@ -931,37 +932,6 @@ bool DesktopShellService::GetPathPositionOnDesktop(const std::wstring& path,
     LogicalToPhysicalPointForPerMonitorDPI(listView, &logicalScreen);
     physicalScreenPoint = logicalScreen;
     return true;
-}
-
-bool DesktopShellService::TryRestoreDesktopPositions(
-    const std::vector<std::pair<std::wstring, POINT>>& positions) {
-    if (positions.empty()) return true;
-    ComPtr<IFolderView> folderView;
-    HWND listView = nullptr;
-    if (!TryGetDesktopFolderView(folderView, listView) || !folderView || !listView) return false;
-
-    std::vector<PCUITEMID_CHILD> children;
-    std::vector<POINT> points;
-    children.reserve(positions.size());
-    points.reserve(positions.size());
-    bool allFound = true;
-    for (const auto& position : positions) {
-        PITEMID_CHILD child = nullptr;
-        if (!TryFindDesktopChild(folderView.Get(), position.first, &child) || !child) {
-            allFound = false;
-            continue;
-        }
-        POINT point = PhysicalScreenToLogicalPoint(listView, position.second);
-        ScreenToClient(listView, &point);
-        children.push_back(child);
-        points.push_back(point);
-    }
-    const bool requested = !children.empty() && SUCCEEDED(folderView->SelectAndPositionItems(
-        static_cast<UINT>(children.size()), children.data(), points.data(), SVSI_POSITIONITEM));
-    for (auto child : children) CoTaskMemFree(const_cast<PITEMID_CHILD>(child));
-    // The caller verifies actual positions on later timer ticks. A successful
-    // COM return alone does not mean Explorer has finished its layout pass.
-    return requested && allFound;
 }
 
 std::vector<std::wstring> DesktopShellService::GetSelectedDesktopPaths() {
@@ -1362,19 +1332,8 @@ std::wstring DesktopShellService::DiagnoseDesktopView(const std::wstring& path) 
     if (SUCCEEDED(positionHr)) {
         POINT origin{};
         ClientToScreen(listView, &origin);
-        POINT physical = itemPosition;
-        ClientToScreen(listView, &physical);
-        LogicalToPhysicalPointForPerMonitorDPI(listView, &physical);
-        POINT spacing{};
-        folderView->GetSpacing(&spacing);
-        ComPtr<IFolderView2> view2;
-        DWORD flags = 0;
-        if (SUCCEEDED(folderView.As(&view2))) view2->GetCurrentFolderFlags(&flags);
         output << std::dec << L" raw-position=" << itemPosition.x << L"," << itemPosition.y
-               << L" view-origin=" << origin.x << L"," << origin.y
-               << L" physical-position=" << physical.x << L"," << physical.y
-               << L" spacing=" << spacing.x << L"," << spacing.y
-               << L" folder-flags=0x" << std::hex << flags;
+               << L" view-origin=" << origin.x << L"," << origin.y;
     }
     return output.str();
 }

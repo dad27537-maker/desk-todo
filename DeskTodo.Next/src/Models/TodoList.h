@@ -54,12 +54,7 @@ inline bool IsValidDueDate(const std::wstring& date) {
 inline uint64_t NextId(const std::vector<TodoItem>& items) {
     uint64_t maximum = 0;
     for (const auto& item : items) maximum = (std::max)(maximum, item.id);
-    if (maximum != UINT64_MAX) return maximum + 1;
-    for (uint64_t candidate = 1; ; ++candidate) {
-        if (std::none_of(items.begin(), items.end(), [candidate](const TodoItem& item) {
-                return item.id == candidate;
-            })) return candidate;
-    }
+    return maximum == UINT64_MAX ? 1 : maximum + 1;
 }
 
 inline bool Add(std::vector<TodoItem>& items, const std::wstring& text,

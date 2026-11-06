@@ -34,7 +34,7 @@ $opencvPackage = Join-Path $downloadRoot 'opencv-4.12.0-windows.exe'
 Get-VerifiedFile 'https://github.com/opencv/opencv/releases/download/4.12.0/opencv-4.12.0-windows.exe' $opencvPackage 'b753b14d880b9bc8d89d6acd3b665c040baec0211078435432fcae117db707af'
 $opencvRoot = Join-Path $dependencyRoot 'opencv'
 if (-not (Test-Path -LiteralPath (Join-Path $opencvRoot 'build\include\opencv2\core.hpp'))) {
-    $extractor = Start-Process -FilePath $opencvPackage -ArgumentList @('-y', ('-o"' + $dependencyRoot + '"')) -WindowStyle Hidden -Wait -PassThru
+    $extractor = Start-Process -FilePath $opencvPackage -ArgumentList @('-y', ('-o' + $dependencyRoot)) -WindowStyle Hidden -Wait -PassThru
     if ($extractor.ExitCode -ne 0) { throw 'OpenCV extraction failed' }
 }
 Copy-Item -LiteralPath (Join-Path $opencvRoot 'build\x64\vc16\bin\opencv_world4120.dll') -Destination $runtimeRoot -Force

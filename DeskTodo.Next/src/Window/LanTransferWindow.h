@@ -39,14 +39,6 @@ private:
     std::wstring transferFileName_;
     std::vector<SharedFile> sharedFiles_;
     unsigned long long nextFileId_ = 1;
-    std::wstring sentText_;
-    std::wstring receivedText_;
-    unsigned long long sentTextVersion_ = 0;
-    unsigned long long receivedTextVersion_ = 0;
-    unsigned long long displayedTextVersion_ = 0;
-    HWND receivedTextEdit_ = nullptr;
-    HFONT textFont_ = nullptr;
-    std::wstring textStatus_;
 
     bool EnsureWindow();
     bool StartServer();
@@ -57,11 +49,6 @@ private:
     void ChooseSendFiles();
     void AddSendFiles(const std::vector<std::wstring>& paths);
     void ClearSendFiles();
-    bool ShareText(const std::wstring& text);
-    void SendClipboardText();
-    void CopyReceivedText();
-    void ClearTexts();
-    void RefreshTextControls();
     void Paint(HDC dc);
     void OpenAddress() const;
     void OpenReceiveDirectory() const;
@@ -74,9 +61,6 @@ private:
     RECT CloseButtonRect() const;
     RECT SendButtonRect() const;
     RECT ClearButtonRect() const;
-    RECT SendTextButtonRect() const;
-    RECT CopyTextButtonRect() const;
-    RECT ClearTextButtonRect() const;
 
     static LRESULT CALLBACK StaticWindowProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT WindowProc(UINT, WPARAM, LPARAM);

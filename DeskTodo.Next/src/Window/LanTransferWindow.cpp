@@ -19,10 +19,9 @@
 namespace {
 constexpr wchar_t WindowClass[] = L"DeskTodoLanTransferWidget";
 constexpr int WindowWidth = 620;
-constexpr int WindowHeight = 668;
+constexpr int WindowHeight = 464;
 constexpr size_t MaxHeaderBytes = 64 * 1024;
 constexpr unsigned long long MaxFileBytes = 4ull * 1024 * 1024 * 1024;
-constexpr size_t MaxTextBytes = 1024 * 1024;
 constexpr UINT RefreshMessage = WM_APP + 73;
 
 // Version 5-L QR encoder. The transfer URL is short enough to fit its
@@ -282,28 +281,13 @@ private:
 };
 
 std::string HeaderValue(const std::string& headers, const std::string& name) {
-    auto pos = headers.find("\r\n");
-    while (pos != std::string::npos) {
-        pos += 2;
-        const auto end = headers.find("\r\n", pos);
-        const auto colon = headers.find(':', pos);
-        if (colon != std::string::npos && colon < end && colon - pos == name.size() &&
-            _strnicmp(headers.data() + pos, name.c_str(), name.size()) == 0) {
-            pos = colon + 1;
-            while (pos < end && (headers[pos] == ' ' || headers[pos] == '\t')) ++pos;
-            auto last = end;
-            while (last > pos && (headers[last - 1] == ' ' || headers[last - 1] == '\t')) --last;
-            return headers.substr(pos, last - pos);
-        }
-        pos = end;
-    }
-    return {};
-}
-
-bool ContentLength(const std::string& headers, unsigned long long& length) {
-    const auto value = HeaderValue(headers, "Content-Length");
-    if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos) return false;
-    try { length = std::stoull(value); return true; } catch (...) { return false; }
+    const std::string key = "\r\n" + name + ":";
+    auto pos = headers.find(key);
+    if (pos == std::string::npos) return {};
+    pos += key.size();
+    while (pos < headers.size() && (headers[pos] == ' ' || headers[pos] == '\t')) ++pos;
+    const auto end = headers.find("\r\n", pos);
+    return headers.substr(pos, end - pos);
 }
 
 std::wstring LocalIpv4() {
@@ -354,12 +338,6 @@ std::string UploadPage(const std::string& token) {
         "input{display:none}button{width:100%;border:0;border-radius:13px;background:#ff6658;color:white;padding:14px;font-size:16px;font-weight:700;margin-top:16px}"
         "button:disabled{opacity:.45}.item{padding:10px 0;border-bottom:1px solid #343641;font-size:14px}.ok{color:#7adf9b}.bad{color:#ff8076}"
         ".download{display:block;color:#ffb7ad;padding:12px 0;overflow-wrap:anywhere}.item{overflow-wrap:anywhere}.progress{height:10px;background:#343641;border-radius:8px;overflow:hidden;margin-top:8px}.bar{height:100%;width:0;background:#ff6658}.pct{color:#c9ccd6;font-size:13px;margin-top:6px}</style>"
-        "<style>textarea{display:block;width:100%;min-height:130px;resize:vertical;background:#101116;color:#f7f7fa;border:1px solid #565968;border-radius:12px;padding:12px;font:16px/1.6 system-ui;white-space:pre-wrap;overflow-wrap:anywhere}.secondary{background:#393b48}.text-status{min-height:1.6em}</style>"
-        "<div class=card><h1>手机与电脑文本互传</h1><p>手机与电脑连接同一 Wi-Fi。粘贴文字后点击发送；接收的文字可确认后复制。单次最多 1 MB。</p>"
-        "<label for=phoneText>发送文本到电脑</label><textarea id=phoneText rows=5 placeholder='在这里长按，粘贴手机复制的文字'></textarea><button id=sendText>发送到电脑</button>"
-        "<p id=sendTextStatus class=text-status role=status></p><label for=computerText>接收电脑文本</label><p>在电脑快传窗口点击“发送剪贴板到手机”，文字会自动显示在下方。</p>"
-        "<textarea id=computerText rows=5 readonly placeholder='等待电脑发送文字…'></textarea><button id=copyText disabled>复制到手机剪贴板</button>"
-        "<button id=refreshText class=secondary>刷新电脑文本</button><p id=textStatus class=text-status role=status></p></div>"
         "<div class=card><h1>接收电脑文件</h1><p>在电脑快传窗口点击“发送到手机”，或拖入文件，再点击下面的文件保存到手机。下载进度可在浏览器下载列表查看。</p>"
         "<div id=downloads aria-live=polite>正在读取文件列表…</div><p id=downloadStatus role=status></p><button id=refresh>刷新文件列表</button></div>"
         "<div class=card><h1>传文件到电脑</h1><p>手机与电脑需连接同一 Wi‑Fi。支持图片、视频和文档，可一次选择多个文件。</p>"
@@ -371,15 +349,7 @@ std::string UploadPage(const std::string& token) {
         "async function loadFiles(){if(loading)return;loading=true;refresh.disabled=true;try{const r=await fetch('/files?token='+token,{cache:'no-store'});if(!r.ok)throw Error();const items=await r.json();"
         "const next=JSON.stringify(items);if(next!==listing){dl.replaceChildren();if(!items.length)dl.textContent='暂无文件，请先在电脑上添加。';for(const x of items){const a=document.createElement('a');a.className='download';a.href='/download?token='+token+'&id='+encodeURIComponent(x.id);a.download=x.name;a.textContent=x.name+' · '+size(x.size);dl.append(a)}listing=next}ds.textContent='';"
         "}catch(e){ds.textContent='暂时无法连接电脑，请确认快传窗口仍然打开后刷新。'}finally{loading=false;refresh.disabled=false}}"
-        "const phoneText=document.querySelector('#phoneText'),computerText=document.querySelector('#computerText'),sendText=document.querySelector('#sendText'),copyText=document.querySelector('#copyText'),refreshText=document.querySelector('#refreshText'),textStatus=document.querySelector('#textStatus'),sendTextStatus=document.querySelector('#sendTextStatus');let textVersion='',textLoading=false;"
-        "async function loadText(){if(textLoading)return;textLoading=true;refreshText.disabled=true;try{const r=await fetch('/text?token='+token,{cache:'no-store'});if(!r.ok)throw Error();const x=await r.json();"
-        "if(x.version!==textVersion){computerText.value=x.text;copyText.disabled=!x.text;textVersion=x.version;textStatus.textContent=x.text?'已收到电脑文本，可以复制。':'等待电脑发送文字…'}else if(textStatus.dataset.connectionError){textStatus.textContent=x.text?'电脑已连接。':'等待电脑发送文字…'}delete textStatus.dataset.connectionError;"
-        "}catch(e){textStatus.textContent='暂时无法连接电脑，请确认快传窗口仍然打开。';textStatus.dataset.connectionError='1'}finally{textLoading=false;refreshText.disabled=false}}"
-        "sendText.onclick=async()=>{const value=phoneText.value;if(!value.length){sendTextStatus.textContent='请先粘贴或输入文字。';return}if(new TextEncoder().encode(value).length>1048576){sendTextStatus.textContent='文本超过 1 MB，请分段发送。';return}"
-        "sendText.disabled=true;sendTextStatus.textContent='正在发送…';try{const r=await fetch('/text?token='+token,{method:'POST',headers:{'Content-Type':'text/plain; charset=utf-8'},body:value});if(!r.ok)throw Error(await r.text());sendTextStatus.textContent='已发送到电脑，请在电脑快传窗口点击“复制手机文本”。'}catch(e){sendTextStatus.textContent='发送失败：'+(e.message||'请检查连接')}finally{sendText.disabled=false}};"
-        "copyText.onclick=async()=>{const value=computerText.value;if(!value)return;let copied=false;try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(value);copied=true}}catch(e){}"
-        "if(!copied){computerText.focus();computerText.select();computerText.setSelectionRange(0,value.length);try{copied=document.execCommand('copy')}catch(e){}}textStatus.textContent=copied?'已复制到手机剪贴板。':'请在接收文本框内长按，全选后复制。';};"
-        "refresh.onclick=loadFiles;refreshText.onclick=loadText;async function poll(){await Promise.all([loadFiles(),loadText()]);setTimeout(poll,3000)}poll();"
+        "refresh.onclick=loadFiles;async function poll(){await loadFiles();setTimeout(poll,3000)}poll();"
         "b.onclick=async()=>{b.disabled=true;f.disabled=true;for(const x of files){let d=document.createElement('div');d.className='item';d.innerHTML='<div>'+esc(x.name)+'</div><div class=progress><div class=bar></div></div><div class=pct>0%</div>';l.append(d);let bar=d.querySelector('.bar'),pct=d.querySelector('.pct');try{await upload(x,p=>{bar.style.width=p+'%';pct.textContent=p+'% - '+size(Math.round(x.size*p/100))+' / '+size(x.size)});d.className='item ok';pct.textContent='已完成'}catch(e){d.className='item bad';pct.textContent='传输失败：'+e.message}}f.disabled=false;b.disabled=!files.length};"
         "function upload(x,progress){return new Promise((ok,bad)=>{let q=new XMLHttpRequest();q.open('POST','/upload?token=" + token + "&name='+encodeURIComponent(x.name));q.setRequestHeader('Content-Type','application/octet-stream');q.upload.onprogress=e=>{if(e.lengthComputable)progress(Math.round(e.loaded/e.total*100))};q.onload=()=>q.status>=200&&q.status<300?ok():bad(Error(q.responseText||q.status));q.onerror=()=>bad(Error('network interrupted'));q.send(x)})}</script></html>";
 }
@@ -425,22 +395,10 @@ bool LanTransferWindow::EnsureWindow() {
     }
     if (!registered) return false;
     MONITORINFO monitor{sizeof(monitor)}; GetMonitorInfoW(MonitorFromPoint({0,0}, MONITOR_DEFAULTTOPRIMARY), &monitor);
-    window_ = CreateWindowExW(WS_EX_TOOLWINDOW, WindowClass, L"局域网快传", WS_POPUP | WS_CLIPCHILDREN,
-        (std::max)(monitor.rcWork.left, monitor.rcWork.right - WindowWidth - 28),
-        (std::max)(monitor.rcWork.top, monitor.rcWork.bottom - WindowHeight - 28),
+    window_ = CreateWindowExW(WS_EX_TOOLWINDOW, WindowClass, L"局域网快传", WS_POPUP,
+        monitor.rcWork.right - WindowWidth - 28, monitor.rcWork.bottom - WindowHeight - 28,
         WindowWidth, WindowHeight, nullptr, nullptr, instance_, this);
-    if (window_) {
-        DragAcceptFiles(window_, TRUE);
-        receivedTextEdit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
-            20, 582, 580, 66, window_, nullptr, instance_, nullptr);
-        textFont_ = CreateFontW(-15,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,
-                               CLEARTYPE_QUALITY,0,L"Segoe UI");
-        SendMessageW(receivedTextEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(textFont_), TRUE);
-        SendMessageW(receivedTextEdit_, EM_SETLIMITTEXT, MaxTextBytes, 0);
-        displayedTextVersion_ = 0;
-        RefreshTextControls();
-    }
+    if (window_) DragAcceptFiles(window_, TRUE);
     return window_ != nullptr;
 }
 
@@ -468,28 +426,18 @@ bool LanTransferWindow::StartServer() {
     int length = sizeof(address); getsockname(listener, reinterpret_cast<sockaddr*>(&address), &length);
     port_ = ntohs(address.sin_port); listenSocket_ = listener;
     address_ = L"http://" + LocalIpv4() + L":" + std::to_wstring(port_) + L"/?token=" + Utf8ToWide(token_);
-    try {
-        std::filesystem::create_directories(receiveDirectory_);
-        running_ = true;
-        serverThread_ = std::thread(&LanTransferWindow::ServerLoop, this);
-    } catch (...) {
-        running_ = false;
-        closesocket(listener);
-        listenSocket_ = INVALID_SOCKET;
-        WSACleanup(); port_ = 0; address_.clear();
-        return false;
-    }
+    std::filesystem::create_directories(receiveDirectory_);
+    running_ = true; serverThread_ = std::thread(&LanTransferWindow::ServerLoop, this);
     return true;
 }
 
 void LanTransferWindow::StopServer() {
-    if (!running_.exchange(false)) { ClearSendFiles(); ClearTexts(); return; }
+    if (!running_.exchange(false)) { ClearSendFiles(); return; }
     if (serverThread_.joinable()) serverThread_.join();
     if (listenSocket_ != INVALID_SOCKET) closesocket(static_cast<SOCKET>(listenSocket_));
     listenSocket_ = INVALID_SOCKET;
     transferActive_ = false;
     ClearSendFiles();
-    ClearTexts();
     WSACleanup(); port_ = 0; address_.clear();
 }
 
@@ -498,8 +446,7 @@ void LanTransferWindow::ServerLoop() {
         if (!WaitForSocket(static_cast<SOCKET>(listenSocket_), false, running_)) continue;
         SOCKET client = accept(static_cast<SOCKET>(listenSocket_), nullptr, nullptr);
         if (client == INVALID_SOCKET) { if (!running_) break; continue; }
-        try { HandleClient(client); }
-        catch (...) { transferActive_ = false; }
+        HandleClient(client);
         closesocket(client);
     }
 }
@@ -514,7 +461,7 @@ void LanTransferWindow::HandleClient(uintptr_t rawSocket) {
         const int count = io.Receive(buffer.data(), static_cast<int>(buffer.size()));
         if (count <= 0) return; request.append(buffer.data(), count); headerEnd = request.find("\r\n\r\n");
     }
-    if (headerEnd == std::string::npos || headerEnd + 4 > MaxHeaderBytes) { io.Respond(431, "Headers Too Large", "text/plain; charset=utf-8", "请求头过大"); return; }
+    if (headerEnd == std::string::npos) { io.Respond(431, "Headers Too Large", "text/plain; charset=utf-8", "请求头过大"); return; }
     const auto lineEnd = request.find("\r\n"); const std::string firstLine = request.substr(0, lineEnd);
     const auto firstSpace = firstLine.find(' '); const auto secondSpace = firstLine.find(' ', firstSpace + 1);
     if (firstSpace == std::string::npos || secondSpace == std::string::npos) return;
@@ -522,43 +469,6 @@ void LanTransferWindow::HandleClient(uintptr_t rawSocket) {
     const std::string path = target.substr(0, target.find('?'));
     if (QueryValue(target, "token") != token_) { io.Respond(403, "Forbidden", "text/plain; charset=utf-8", "访问口令无效"); return; }
     if (method == "GET" && path == "/") { io.Respond(200, "OK", "text/html; charset=utf-8", UploadPage(token_)); return; }
-    if (method == "GET" && path == "/text") {
-        std::string body;
-        {
-            std::lock_guard<std::mutex> lock(transferMutex_);
-            body = "{\"version\":\"" + std::to_string(sentTextVersion_) + "\",\"text\":" + JsonString(sentText_) + "}";
-        }
-        io.Respond(200, "OK", "application/json; charset=utf-8", body);
-        return;
-    }
-    if (method == "POST" && path == "/text") {
-        unsigned long long length = 0;
-        if (!ContentLength(request.substr(0, headerEnd + 2), length)) {
-            io.Respond(411, "Length Required", "text/plain; charset=utf-8", "缺少有效的文本长度"); return;
-        }
-        if (length == 0 || length > MaxTextBytes) {
-            io.Respond(413, "Payload Too Large", "text/plain; charset=utf-8", "文本为空或超过 1 MB，请分段发送"); return;
-        }
-        std::string bytes = request.substr(headerEnd + 4, static_cast<size_t>(length));
-        while (bytes.size() < length) {
-            const int count = io.Receive(buffer.data(), static_cast<int>((std::min)(
-                static_cast<size_t>(buffer.size()), static_cast<size_t>(length) - bytes.size())));
-            if (count <= 0) return;
-            bytes.append(buffer.data(), count);
-        }
-        auto text = Utf8ToWide(bytes);
-        if (text.empty() || text.find(L'\0') != std::wstring::npos) {
-            io.Respond(400, "Bad Request", "text/plain; charset=utf-8", "文本编码无效，请使用 UTF-8 纯文本"); return;
-        }
-        {
-            std::lock_guard<std::mutex> lock(transferMutex_);
-            receivedText_ = std::move(text);
-            ++receivedTextVersion_;
-        }
-        if (window_) PostMessageW(window_, RefreshMessage, 0, 0);
-        io.Respond(200, "OK", "text/plain; charset=utf-8", "已发送到电脑");
-        return;
-    }
     if (method == "GET" && path == "/files") {
         std::string body = "[";
         {
@@ -578,7 +488,7 @@ void LanTransferWindow::HandleClient(uintptr_t rawSocket) {
     if (method == "GET" && path == "/download") { SendFile(rawSocket, QueryValue(target, "id")); return; }
     if (method != "POST" || path != "/upload") { io.Respond(404, "Not Found", "text/plain", "Not found"); return; }
     unsigned long long contentLength = 0;
-    if (!ContentLength(request.substr(0, headerEnd + 2), contentLength)) {
+    try { contentLength = std::stoull(HeaderValue(request.substr(0, headerEnd + 2), "Content-Length")); } catch (...) {
         io.Respond(411, "Length Required", "text/plain", "Content-Length required"); return;
     }
     if (contentLength == 0 || contentLength > MaxFileBytes) { io.Respond(413, "Payload Too Large", "text/plain; charset=utf-8", "文件为空或超过 4 GB"); return; }
@@ -588,29 +498,9 @@ void LanTransferWindow::HandleClient(uintptr_t rawSocket) {
     std::wstring directory;
     { std::lock_guard<std::mutex> lock(transferMutex_); directory = receiveDirectory_; }
     const auto destination = UniquePath(directory, fileName);
-    struct UploadFile {
-        std::wstring path;
-        HANDLE handle = INVALID_HANDLE_VALUE;
-        ~UploadFile() {
-            if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
-            if (!path.empty()) DeleteFileW(path.c_str());
-        }
-        bool Write(const char* bytes, DWORD size) {
-            DWORD written = 0;
-            return WriteFile(handle, bytes, size, &written, nullptr) && written == size;
-        }
-    } upload;
-    // Reserve a fresh file atomically; never truncate a pre-existing .part.
-    for (unsigned attempt = 0; attempt < 100; ++attempt) {
-        auto candidate = destination.wstring() + L".desktodo-part-" +
-            std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()) +
-            L"-" + std::to_wstring(attempt);
-        upload.handle = CreateFileW(candidate.c_str(), GENERIC_WRITE, 0, nullptr,
-            CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (upload.handle != INVALID_HANDLE_VALUE) { upload.path = std::move(candidate); break; }
-        if (GetLastError() != ERROR_FILE_EXISTS && GetLastError() != ERROR_ALREADY_EXISTS) break;
-    }
-    if (upload.handle == INVALID_HANDLE_VALUE) { io.Respond(500, "Internal Server Error", "text/plain; charset=utf-8", "无法创建文件"); return; }
+    const auto temporary = destination.wstring() + L".desktodo-part";
+    std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+    if (!stream) { io.Respond(500, "Internal Server Error", "text/plain; charset=utf-8", "无法创建文件"); return; }
     transferTotal_ = contentLength;
     transferBytes_ = 0;
     transferActive_ = true;
@@ -618,25 +508,25 @@ void LanTransferWindow::HandleClient(uintptr_t rawSocket) {
     if (window_) PostMessageW(window_, RefreshMessage, 0, 0);
     const size_t bodyOffset = headerEnd + 4; unsigned long long written = request.size() - bodyOffset;
     if (written > contentLength) written = contentLength;
-    bool writeSucceeded = upload.Write(request.data() + bodyOffset, static_cast<DWORD>(written));
+    stream.write(request.data() + bodyOffset, static_cast<std::streamsize>(written));
     transferBytes_ = written;
-    while (writeSucceeded && written < contentLength) {
+    while (written < contentLength) {
         const int count = io.Receive(buffer.data(), static_cast<int>(std::min<unsigned long long>(buffer.size(), contentLength - written)));
-        if (count <= 0) { transferActive_ = false; if (window_) PostMessageW(window_, RefreshMessage, 0, 0); return; }
-        writeSucceeded = upload.Write(buffer.data(), static_cast<DWORD>(count));
-        written += count; transferBytes_ = written;
+        if (count <= 0) { transferActive_ = false; stream.close(); std::filesystem::remove(temporary); if (window_) PostMessageW(window_, RefreshMessage, 0, 0); return; }
+        stream.write(buffer.data(), count); written += count; transferBytes_ = written;
         if (window_) PostMessageW(window_, RefreshMessage, 0, 0);
     }
-    if (!CloseHandle(upload.handle)) writeSucceeded = false;
-    upload.handle = INVALID_HANDLE_VALUE;
-    if (!writeSucceeded) {
+    stream.close();
+    if (!stream) {
         transferActive_ = false;
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
         if (window_) PostMessageW(window_, RefreshMessage, 0, 0);
         io.Respond(500, "Internal Server Error", "text/plain; charset=utf-8", "写入文件失败，请检查磁盘空间");
         return;
     }
-    if (!MoveFileW(upload.path.c_str(), destination.c_str())) { transferActive_ = false; if (window_) PostMessageW(window_, RefreshMessage, 0, 0); io.Respond(500, "Internal Server Error", "text/plain; charset=utf-8", "保存文件失败"); return; }
-    upload.path.clear();
+    std::error_code error; std::filesystem::rename(temporary, destination, error);
+    if (error) { transferActive_ = false; std::filesystem::remove(temporary); if (window_) PostMessageW(window_, RefreshMessage, 0, 0); io.Respond(500, "Internal Server Error", "text/plain; charset=utf-8", "保存文件失败"); return; }
     transferActive_ = false; ++receivedCount_; if (window_) PostMessageW(window_, RefreshMessage, 0, 0);
     io.Respond(200, "OK", "application/json", "{\"ok\":true}");
 }
@@ -720,98 +610,6 @@ void LanTransferWindow::ClearSendFiles() {
     if (window_) InvalidateRect(window_, nullptr, FALSE);
 }
 
-bool LanTransferWindow::ShareText(const std::wstring& text) {
-    if (text.empty() || text.size() > MaxTextBytes || text.find(L'\0') != std::wstring::npos) return false;
-    const int bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(),
-        static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
-    if (bytes <= 0 || bytes > MaxTextBytes) return false;
-    {
-        std::lock_guard<std::mutex> lock(transferMutex_);
-        sentText_ = text;
-        ++sentTextVersion_;
-    }
-    return true;
-}
-
-void LanTransferWindow::SendClipboardText() {
-    std::wstring text;
-    if (!OpenClipboard(window_)) {
-        textStatus_ = L"剪贴板正被占用，请稍后重试。";
-    } else {
-        const HANDLE data = GetClipboardData(CF_UNICODETEXT);
-        const auto* value = data ? static_cast<const wchar_t*>(GlobalLock(data)) : nullptr;
-        if (value) {
-            const size_t capacity = (std::min)(GlobalSize(data) / sizeof(wchar_t), MaxTextBytes + 1);
-            const size_t length = wcsnlen_s(value, capacity);
-            if (length < capacity) text.assign(value, length);
-            GlobalUnlock(data);
-        }
-        CloseClipboard();
-        textStatus_ = ShareText(text) ? L"已发送剪贴板文本，手机网页会自动显示。"
-            : L"请先复制文字；单次文本最多 1 MB。";
-    }
-    if (window_) InvalidateRect(window_, nullptr, FALSE);
-}
-
-void LanTransferWindow::CopyReceivedText() {
-    std::wstring text;
-    { std::lock_guard<std::mutex> lock(transferMutex_); text = receivedText_; }
-    if (text.empty()) {
-        textStatus_ = L"还没有手机文本，请先在手机网页粘贴并发送。";
-    } else {
-        HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE, (text.size() + 1) * sizeof(wchar_t));
-        auto* value = data ? GlobalLock(data) : nullptr;
-        bool copied = false;
-        if (value) {
-            memcpy(value, text.c_str(), (text.size() + 1) * sizeof(wchar_t));
-            GlobalUnlock(data);
-            if (OpenClipboard(window_)) {
-                if (EmptyClipboard() && SetClipboardData(CF_UNICODETEXT, data)) {
-                    copied = true;
-                    data = nullptr; // Clipboard owns the allocation.
-                }
-                CloseClipboard();
-            }
-        }
-        if (data) GlobalFree(data);
-        textStatus_ = copied ? L"已复制手机文本到电脑剪贴板，可直接粘贴。"
-                             : L"复制失败，请稍后重试，或选中下方文字复制。";
-    }
-    if (window_) InvalidateRect(window_, nullptr, FALSE);
-}
-
-void LanTransferWindow::RefreshTextControls() {
-    std::wstring text;
-    {
-        std::lock_guard<std::mutex> lock(transferMutex_);
-        if (displayedTextVersion_ == receivedTextVersion_) return;
-        text = receivedText_;
-        displayedTextVersion_ = receivedTextVersion_;
-    }
-    if (receivedTextEdit_) {
-        // The Windows edit control expects CRLF, while phone browsers use LF.
-        std::wstring display;
-        for (size_t i = 0; i < text.size(); ++i) {
-            if (text[i] == L'\n' && (i == 0 || text[i - 1] != L'\r')) display += L'\r';
-            display += text[i];
-        }
-        SetWindowTextW(receivedTextEdit_, display.c_str());
-    }
-    textStatus_ = text.empty() ? L"文本已清空。" : L"收到手机文本，可点击“复制手机文本”或选中文字复制。";
-}
-
-void LanTransferWindow::ClearTexts() {
-    {
-        std::lock_guard<std::mutex> lock(transferMutex_);
-        sentText_.clear();
-        receivedText_.clear();
-        ++sentTextVersion_;
-        ++receivedTextVersion_;
-    }
-    RefreshTextControls();
-    if (window_) InvalidateRect(window_, nullptr, FALSE);
-}
-
 void LanTransferWindow::ChooseSendFiles() {
     IFileOpenDialog* dialog = nullptr;
     if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) return;
@@ -849,9 +647,6 @@ RECT LanTransferWindow::OpenButtonRect() const { return {250, 292, 365, 338}; }
 RECT LanTransferWindow::ChooseFolderButtonRect() const { return {375, 292, 480, 338}; }
 RECT LanTransferWindow::FolderButtonRect() const { return {490, 292, 590, 338}; }
 RECT LanTransferWindow::CloseButtonRect() const { return {582, 10, 610, 38}; }
-RECT LanTransferWindow::SendTextButtonRect() const { return {20, 516, 244, 556}; }
-RECT LanTransferWindow::CopyTextButtonRect() const { return {254, 516, 446, 556}; }
-RECT LanTransferWindow::ClearTextButtonRect() const { return {456, 516, 600, 556}; }
 
 void LanTransferWindow::Paint(HDC dc) {
     RECT client{}; GetClientRect(window_, &client); FillRounded(dc, client, 22, RGB(247,252,250));
@@ -864,7 +659,7 @@ void LanTransferWindow::Paint(HDC dc) {
               {250,54,590,92}, body, RGB(75,112,108), DT_LEFT|DT_WORDBREAK);
     FillRounded(dc, {250,96,590,140}, 10, RGB(225,246,239));
     DrawLabel(dc, address_, {262,96,578,140}, url, RGB(13,148,136), DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
-    DrawLabel(dc, L"手机扫码后，可双向传输文件和复制的文字。",
+    DrawLabel(dc, L"手机扫码后可上传文件到电脑，也可下载下方添加的电脑文件。",
               {250,154,590,206}, body, RGB(47,91,87), DT_LEFT|DT_WORDBREAK);
     const std::wstring status = L"已接收 " + std::to_wstring(receivedCount_.load()) +
         L" / 已发送 " + std::to_wstring(sentCount_.load()) + L"  ·  " + receiveDirectory_;
@@ -918,17 +713,6 @@ void LanTransferWindow::Paint(HDC dc) {
               RGB(47,91,87), DT_LEFT|DT_VCENTER|DT_SINGLELINE);
     DrawLabel(dc, summary.empty() ? L"也可将文件拖入此窗口；关闭窗口后发送列表自动清空。" : summary,
               {20,408,590,444}, body, RGB(75,112,108), DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
-    FillRounded(dc, {20,452,600,454}, 1, RGB(205,229,221));
-    DrawLabel(dc, L"文本互传", {20,462,600,488}, title, RGB(19,78,74), DT_LEFT|DT_VCENTER|DT_SINGLELINE);
-    DrawLabel(dc, textStatus_.empty() ? L"复制文字后点击发送；收到的手机文本会显示在下方。" : textStatus_,
-              {20,488,600,512}, body, RGB(75,112,108), DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
-    FillRounded(dc, SendTextButtonRect(), 11, RGB(13,148,136));
-    FillRounded(dc, CopyTextButtonRect(), 11, RGB(225,246,239));
-    FillRounded(dc, ClearTextButtonRect(), 11, RGB(225,246,239));
-    DrawLabel(dc, L"发送剪贴板到手机", SendTextButtonRect(), body, RGB(255,255,255), DT_CENTER|DT_VCENTER|DT_SINGLELINE);
-    DrawLabel(dc, L"复制手机文本", CopyTextButtonRect(), body, RGB(19,78,74), DT_CENTER|DT_VCENTER|DT_SINGLELINE);
-    DrawLabel(dc, L"清空文本", ClearTextButtonRect(), body, RGB(19,78,74), DT_CENTER|DT_VCENTER|DT_SINGLELINE);
-    DrawLabel(dc, L"手机发来的文本（可选择复制）", {20,558,600,582}, body, RGB(47,91,87), DT_LEFT|DT_VCENTER|DT_SINGLELINE);
     DeleteObject(title); DeleteObject(body); DeleteObject(url);
 }
 
@@ -988,7 +772,7 @@ LRESULT LanTransferWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
     switch (message) {
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: { PAINTSTRUCT ps{}; HDC dc=BeginPaint(window_,&ps); RECT r{};GetClientRect(window_,&r);HDC mem=CreateCompatibleDC(dc);HBITMAP bmp=CreateCompatibleBitmap(dc,r.right,r.bottom);auto old=SelectObject(mem,bmp);Paint(mem);BitBlt(dc,0,0,r.right,r.bottom,mem,0,0,SRCCOPY);SelectObject(mem,old);DeleteObject(bmp);DeleteDC(mem);EndPaint(window_,&ps);return 0; }
-    case RefreshMessage: RefreshTextControls(); InvalidateRect(window_, nullptr, FALSE); return 0;
+    case RefreshMessage: InvalidateRect(window_, nullptr, FALSE); return 0;
     case WM_DROPFILES: {
         const HDROP drop = reinterpret_cast<HDROP>(wp);
         const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
@@ -1017,10 +801,6 @@ LRESULT LanTransferWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
         auto send = SendButtonRect(), clear = ClearButtonRect();
         if (PtInRect(&send, p)) { ChooseSendFiles(); return 0; }
         if (PtInRect(&clear, p)) { ClearSendFiles(); return 0; }
-        auto sendText = SendTextButtonRect(), copyText = CopyTextButtonRect(), clearText = ClearTextButtonRect();
-        if (PtInRect(&sendText, p)) { SendClipboardText(); return 0; }
-        if (PtInRect(&copyText, p)) { CopyReceivedText(); return 0; }
-        if (PtInRect(&clearText, p)) { ClearTexts(); return 0; }
         if (p.y < 45) { ReleaseCapture(); SendMessageW(window_, WM_NCLBUTTONDOWN, HTCAPTION, 0); }
         return 0;
     }
@@ -1028,11 +808,7 @@ LRESULT LanTransferWindow::WindowProc(UINT message, WPARAM wp, LPARAM lp) {
         StopServer();
         DestroyWindow(window_);
         return 0;
-    case WM_DESTROY:
-        receivedTextEdit_ = nullptr;
-        if (textFont_) { DeleteObject(textFont_); textFont_ = nullptr; }
-        window_ = nullptr;
-        return 0;
+    case WM_DESTROY: window_ = nullptr; return 0;
     }
     return DefWindowProcW(window_, message, wp, lp);
 }

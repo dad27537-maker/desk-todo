@@ -19,16 +19,6 @@ struct LanTransferTestAccess {
     static void Add(LanTransferWindow& server, const std::vector<std::wstring>& paths) { server.AddSendFiles(paths); }
     static void Clear(LanTransferWindow& server) { server.ClearSendFiles(); }
     static bool Active(const LanTransferWindow& server) { return server.transferActive_; }
-    static bool ShareText(LanTransferWindow& server, const std::wstring& text) { return server.ShareText(text); }
-    static std::wstring ReceivedText(LanTransferWindow& server) {
-        std::lock_guard<std::mutex> lock(server.transferMutex_);
-        return server.receivedText_;
-    }
-    static void ClearTexts(LanTransferWindow& server) { server.ClearTexts(); }
-    static HWND TextEdit(LanTransferWindow& server) {
-        server.RefreshTextControls();
-        return server.receivedTextEdit_;
-    }
     static unsigned long long Sent(const LanTransferWindow& server) { return server.sentCount_; }
     static HWND Window(LanTransferWindow& server) {
         return server.EnsureWindow() ? server.window_ : nullptr;
@@ -68,10 +58,9 @@ struct Connection {
 };
 
 std::string Request(unsigned short port, const std::string& target,
-                    const std::string& method = "GET", const std::string& body = "",
-                    const std::string& lengthHeader = "Content-Length") {
+                    const std::string& method = "GET", const std::string& body = "") {
     Connection connection(port);
-    connection.Write(method + " " + target + " HTTP/1.1\r\nHost: localhost\r\n" + lengthHeader + ": " +
+    connection.Write(method + " " + target + " HTTP/1.1\r\nHost: localhost\r\nContent-Length: " +
                      std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body);
     std::string response;
     char buffer[8192];
@@ -126,10 +115,6 @@ int main() {
     int result = 0;
     try {
         LanTransferWindow server(GetModuleHandleW(nullptr));
-        const auto invalidDirectory = directory / L"not-a-directory";
-        { std::ofstream marker(invalidDirectory); marker << "keep"; }
-        Require(!LanTransferTestAccess::Start(server, invalidDirectory), "invalid receive directory must fail without throwing");
-        Require(LanTransferTestAccess::Port(server) == 0, "failed startup must release its port and state");
         Require(LanTransferTestAccess::Start(server, directory), "start server");
         const auto port = LanTransferTestAccess::Port(server);
         const auto token = LanTransferTestAccess::Token(server);
@@ -138,9 +123,6 @@ int main() {
         Status(page, 200);
         Require(Body(page).find("id=downloads") != std::string::npos, "missing download interface");
         Require(Body(page).find("type=file multiple") != std::string::npos, "missing upload interface");
-        Require(Body(page).find("id=phoneText") != std::string::npos, "missing text send interface");
-        Require(Body(page).find("id=computerText") != std::string::npos, "missing text receive interface");
-        Require(Body(page).find("execCommand('copy')") != std::string::npos, "missing HTTP clipboard fallback");
         std::ofstream("lan-transfer-smoke-page.html", std::ios::binary) << Body(page);
         Status(Request(port, "/files"), 403);
         Status(Request(port, "/files?token=" + token + "suffix"), 403);
@@ -148,56 +130,6 @@ int main() {
         Require(Body(Request(port, "/files" + auth)) == "[]", "initial list is not empty");
         Status(Request(port, "/unknown" + auth), 404);
         Status(Request(port, "/download" + auth + "&id=../../README.md"), 404);
-        {
-            Connection oversizedHeader(port);
-            std::string header = "GET /files" + auth + " HTTP/1.1\r\nX-Padding: ";
-            header.append(65537 - header.size() - 4, 'x');
-            oversizedHeader.Write(header + "\r\n\r\n");
-            char reply[1024]{};
-            const int count = recv(oversizedHeader.socket, reply, sizeof(reply), 0);
-            Require(count > 0, "oversized header did not respond");
-            Status(std::string(reply, count), 431);
-        }
-
-        const auto initialText = Body(Request(port, "/text" + auth));
-        Require(initialText.find("\"text\":\"\"") != std::string::npos, "text should start empty");
-        const std::wstring desktopText = L"电脑中文 😀\r\n\"quoted\" & <script>alert(1)</script>\t\\路径";
-        Require(LanTransferTestAccess::ShareText(server, desktopText), "share PC text");
-        const auto sharedText = Request(port, "/text" + auth);
-        Status(sharedText, 200);
-        Require(sharedText.find("Cache-Control: no-store") != std::string::npos, "text response cached");
-        Require(Body(sharedText).find("电脑中文 😀\\u000d\\u000a\\\"quoted\\\"") != std::string::npos, "Unicode text JSON escaping");
-        Require(Body(sharedText) != initialText, "text version not advanced");
-        Require(!LanTransferTestAccess::ShareText(server, L""), "accepted empty PC text");
-        Require(!LanTransferTestAccess::ShareText(server, std::wstring(1048577, L'x')), "accepted oversized PC text");
-        Require(!LanTransferTestAccess::ShareText(server, std::wstring(400000, L'文')), "PC limit must count UTF-8 bytes");
-        Require(!LanTransferTestAccess::ShareText(server, std::wstring(1, static_cast<wchar_t>(0xD800))), "accepted unpaired surrogate");
-        Status(Request(port, "/text"), 403);
-        Status(Request(port, "/text?token=" + token + "suffix", "POST", "forbidden"), 403);
-        Require(LanTransferTestAccess::ReceivedText(server).empty(), "unauthorized text accepted");
-        const std::string phoneText = "手机复制文本 🐱\nsecond line\t<&>\"\\";
-        Status(Request(port, "/text" + auth, "POST", phoneText, "content-length"), 200);
-        Require(LanTransferTestAccess::ReceivedText(server) == L"手机复制文本 🐱\nsecond line\t<&>\"\\", "phone Unicode text differs");
-        Require(Body(Request(port, "/text" + auth)) == Body(sharedText), "incoming text overwrote outgoing text");
-        Status(Request(port, "/text" + auth, "POST", ""), 413);
-        Status(Request(port, "/text" + auth, "POST", std::string("\xc0\xaf", 2)), 400);
-        Status(Request(port, "/text" + auth, "POST", std::string("a\0b", 3)), 400);
-        Require(LanTransferTestAccess::ReceivedText(server) == L"手机复制文本 🐱\nsecond line\t<&>\"\\", "rejected text overwrote received text");
-        {
-            Connection oversized(port);
-            oversized.Write("POST /text" + auth + " HTTP/1.1\r\nContent-Length: 1048577\r\n\r\n");
-            char response[1024]{};
-            const int count = recv(oversized.socket, response, sizeof(response), 0);
-            Require(count > 0, "oversized text did not respond");
-            Status(std::string(response, count), 413);
-        }
-        const std::string maxText(1048576, 'x');
-        Status(Request(port, "/text" + auth, "POST", maxText), 200);
-        Require(LanTransferTestAccess::ReceivedText(server).size() == maxText.size(), "large text truncated");
-        Require(LanTransferTestAccess::ShareText(server, std::wstring(1048576, L'x')), "maximum PC text rejected");
-        LanTransferTestAccess::ClearTexts(server);
-        Require(LanTransferTestAccess::ReceivedText(server).empty(), "received text not cleared");
-        Require(Body(Request(port, "/text" + auth)).find("\"text\":\"\"") != std::string::npos, "shared text not cleared");
 
         const auto file = directory / L"手机 & '资料'.bin";
         std::string bytes(200123, '\0');
@@ -234,15 +166,6 @@ int main() {
         Require(newId != id, "cleared IDs reused");
         const HWND window = LanTransferTestAccess::Window(server);
         Require(window != nullptr, "create native window");
-        Status(Request(port, "/text" + auth, "POST", phoneText), 200);
-        const auto textEdit = LanTransferTestAccess::TextEdit(server);
-        Require(textEdit && (GetWindowLongPtrW(textEdit, GWL_STYLE) & ES_READONLY), "missing read-only text preview");
-        wchar_t preview[256]{};
-        GetWindowTextW(textEdit, preview, 256);
-        Require(std::wstring(preview) == L"手机复制文本 🐱\r\nsecond line\t<&>\"\\", "text preview lost content or line endings");
-        SendMessageW(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(520, 536));
-        Require(LanTransferTestAccess::ReceivedText(server).empty(), "clear text button failed");
-        Require(GetWindowTextLengthW(textEdit) == 0, "text preview not cleared");
         Require((GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_ACCEPTFILES) != 0, "file drop disabled");
         SendMessageW(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(230, 370));
         Require(Body(Request(port, "/files" + auth)) == "[]", "clear button did not clear files");
@@ -264,12 +187,7 @@ int main() {
         Status(Request(port, "/download" + auth + "&id=" + droppedId), 404);
         Require(Body(Request(port, "/files" + auth)) == "[]", "deleted file still listed");
 
-        const auto existingPart = directory / L"手机.bin.desktodo-part";
-        { std::ofstream preserved(existingPart); preserved << "existing user data"; }
         Status(Request(port, "/upload" + auth + "&name=%E6%89%8B%E6%9C%BA.bin", "POST", bytes), 200);
-        { std::ifstream preserved(existingPart);
-          Require(std::string(std::istreambuf_iterator<char>(preserved), {}) == "existing user data",
-                  "upload must not truncate an existing temporary-looking file"); }
         std::ifstream uploaded(directory / L"手机.bin", std::ios::binary);
         std::string saved((std::istreambuf_iterator<char>(uploaded)), std::istreambuf_iterator<char>());
         Require(saved == bytes, "upload regression: bytes differ");
@@ -277,38 +195,16 @@ int main() {
         Status(Request(port, "/upload" + auth + "&name=%E6%89%8B%E6%9C%BA.bin", "POST", "second"), 200);
         Require(std::filesystem::exists(directory / L"手机 (1).bin"), "upload overwrote a file");
         {
-            Connection conflict(port);
-            conflict.Write("POST /upload" + auth + "&name=conflict.bin HTTP/1.1\r\nContent-Length: 4\r\n\r\nx");
-            WaitActive(server);
-            const auto destination = directory / L"conflict.bin";
-            { std::ofstream existing(destination); existing << "created during upload"; }
-            conflict.Write("yzq");
-            char reply[1024]{};
-            const int count = recv(conflict.socket, reply, sizeof(reply), 0);
-            Require(count > 0, "conflicting destination did not respond");
-            Status(std::string(reply, count), 500);
-            std::ifstream existing(destination);
-            Require(std::string(std::istreambuf_iterator<char>(existing), {}) == "created during upload",
-                    "upload must not overwrite a destination created while receiving");
-        }
-        Status(Request(port, "/files" + auth), 200);
-        {
             Connection stalled(port);
             stalled.Write("POST /upload" + auth + "&name=interrupted.bin HTTP/1.1\r\nContent-Length: 99999999\r\n\r\nx");
             WaitActive(server);
             std::cout << "Stopping interrupted upload..." << std::endl;
             StopPromptly(server);
             Require(!std::filesystem::exists(directory / L"interrupted.bin.desktodo-part"), "partial upload not removed");
-            for (const auto& entry : std::filesystem::directory_iterator(directory)) {
-                Require(entry.path().filename().wstring().find(L"interrupted.bin.desktodo-part-") != 0,
-                        "cancelled upload must remove its reserved temporary file");
-            }
         }
         Require(LanTransferTestAccess::Start(server, directory), "restart server");
         const auto nextPort = LanTransferTestAccess::Port(server);
         Require(Body(Request(nextPort, "/files" + auth)) == "[]", "session files survived shutdown");
-        Require(Body(Request(nextPort, "/text" + auth)).find("\"text\":\"\"") != std::string::npos, "session text survived shutdown");
-        Require(LanTransferTestAccess::ReceivedText(server).empty(), "received text survived shutdown");
         const auto large = directory / L"large.bin";
         std::ofstream(large).close();
         std::filesystem::resize_file(large, 64ull * 1024 * 1024);
@@ -324,7 +220,7 @@ int main() {
             StopPromptly(server);
             Require(LanTransferTestAccess::Sent(server) == 2, "cancelled download counted as complete");
         }
-        std::cout << "LAN transfer smoke passed: bidirectional Unicode text, limits, preview, downloads, auth, upload regression, cancellation, session cleanup.\n";
+        std::cout << "LAN transfer smoke passed: downloads, auth, Unicode, upload regression, cancellation, session cleanup.\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         result = 1;

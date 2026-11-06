@@ -304,7 +304,7 @@ float4 ScenePS(PixelInput input) : SV_TARGET {
     float3 sky = skyboxTex.SampleLevel(linearSampler, rayDir, 0).rgb;
     color += transmittance * sky * starBrightness;
 
-    return float4(color, transmittance);
+    return float4(color, 1.0);
 }
 
 // ===== Brightness Extract =====
@@ -356,7 +356,7 @@ Texture2D compositeBloomTex : register(t1);
 float4 CompositePS(PixelInput input) : SV_TARGET {
     float3 scene = compositeSceneTex.SampleLevel(linearSampler, input.uv, 0).rgb;
     float3 bloom = compositeBloomTex.SampleLevel(linearSampler, input.uv, 0).rgb;
-    return float4(scene + bloom * bloomStrength, compositeSceneTex.SampleLevel(linearSampler, input.uv, 0).a);
+    return float4(scene + bloom * bloomStrength, 1.0);
 }
 
 // ===== Tone Mapping (ACES Filmic + gamma) =====
@@ -380,8 +380,7 @@ float4 TonemapPS(PixelInput input) : SV_TARGET {
         ldr = saturate(hdr);
     }
     ldr = pow(ldr, 1.0 / max(gamma, 0.1));
-    float coverage = max(1.0 - tonemapTex.SampleLevel(linearSampler, input.uv, 0).a, max(ldr.r, max(ldr.g, ldr.b)));
-    return float4(ldr, saturate(coverage));
+    return float4(ldr, 1.0);
 }
 )HLSL";
 

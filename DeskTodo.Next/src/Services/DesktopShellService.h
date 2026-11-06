@@ -2,7 +2,6 @@
 
 #include <Windows.h>
 #include <string>
-#include <utility>
 #include <vector>
 
 enum class ItemContextMenuResult {
@@ -24,10 +23,6 @@ public:
     // overlay's pointer-message loop.
     static bool TryRestorePathToDesktopPosition(
         const std::wstring& path, POINT physicalScreenPoint);
-    // Submit a complete layout in one Shell transaction so occupied cells in
-    // the previous layout cannot push an earlier restored icon to another row.
-    static bool TryRestoreDesktopPositions(
-        const std::vector<std::pair<std::wstring, POINT>>& positions);
     static bool GetPathPositionOnDesktop(const std::wstring& path, POINT& physicalScreenPoint);
     static std::vector<std::wstring> GetSelectedDesktopPaths();
     // Removes/restores only the desktop IShellView representation. The real

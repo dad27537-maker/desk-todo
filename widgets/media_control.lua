@@ -14,7 +14,7 @@ local function drawBtn(id, glyph, x, y, sz, enabled)
     local fg = enabled and 0xFFFFFF or 0x3D4555
     draw.rect(x, y, sz, sz, 0xFFFFFF, sz * 0.22, enabled and 0.10 or 0.04)
     draw.fa(glyph, x + sz * 0.12, y + sz * 0.12, sz * 0.76, fg)
-    btnRects[id] = { x = x, y = y, w = sz, h = sz, enabled = enabled }
+    btnRects[id] = { x = x, y = y, w = sz, h = sz }
 end
 
 function render()
@@ -62,7 +62,6 @@ end
 function onClick(x, y)
     for id, r in pairs(btnRects) do
         if x >= r.x and x <= r.x + r.w and y >= r.y and y <= r.y + r.h then
-            if not r.enabled then return end
             if id == "previous" then media.previous()
             elseif id == "playPause" then
                 local current = media.current()

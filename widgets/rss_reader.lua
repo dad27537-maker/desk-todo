@@ -4,8 +4,6 @@ bottomBarHover = false
 local articles = {}
 local feedTitle = ""
 local loading = false
-local pendingId = nil
-local pendingUrl = nil
 local lastError = ""
 local visibleRange = { first = 0, last = 0, offset = 0 }
 
@@ -51,7 +49,6 @@ local function fetch()
     loading = true
     local cfg = readConfig()
     if cfg.url == "" then loading = false; return end
-    pendingUrl = cfg.url
     local id = http.request({
         url = cfg.url,
         method = "GET",
@@ -59,7 +56,6 @@ local function fetch()
         cacheSeconds = 120,
         headers = { ["User-Agent"] = "DeskTodo RSS Reader" }
     })
-    pendingId = id
     if not id then
         loading = false
         lastError = "请求失败，请检查 URL 和网络"
@@ -81,10 +77,7 @@ function onTimer(name)
 end
 
 function onHttpResponse(id, response)
-    if id ~= pendingId then return end
-    pendingId = nil
     loading = false
-    if readConfig().url ~= pendingUrl then fetch(); return end
     if not response.ok then
         lastError = response.error ~= "" and response.error or ("HTTP " .. tostring(response.status))
         return
@@ -95,7 +88,7 @@ function onHttpResponse(id, response)
 
     -- Parse feed channel title
     local ft = body:match("<channel>.-<title>(.-)</title>")
-        or body:match("<feed[^>]*>.-<title>(.-)</title>") or ""
+        or body:match("<feed>.-<title>(.-)</title>") or ""
     ft = ft:gsub("<[^>]+>", ""):gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&amp;", "&")
     feedTitle = ft
 
@@ -105,7 +98,7 @@ function onHttpResponse(id, response)
 
     -- Try Atom first (entries)
     local isAtom = false
-    for entry in body:gmatch("<entry[^>]*>(.-)</entry>") do
+    for entry in body:gmatch("<entry>(.-)</entry>") do
         isAtom = true
         if #parsed >= cfg.maxItems then break end
         local item = parseAtom(entry)
