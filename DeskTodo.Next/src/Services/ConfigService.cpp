@@ -1,4 +1,5 @@
 #include "ConfigService.h"
+#include "AtomicFile.h"
 #include "../Utils/JsonUtils.h"
 #include "DesktopPathService.h"
 #include <algorithm>
@@ -10,6 +11,8 @@
 #include <limits>
 #include <mutex>
 #include <utility>
+#include <unordered_set>
+#include <cwctype>
 
 namespace {
 
@@ -84,6 +87,21 @@ bool IsMissingFileError(DWORD error) {
     return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
 }
 
+bool ValidFencePaths(const std::vector<Fence>& fences) {
+    std::unordered_set<std::wstring> identifiers;
+    for (const auto& fence : fences) {
+        const auto& id = fence.id;
+        if (id.empty() || id == L"." || id == L".." || id.back() == L'.' || id.back() == L' ' ||
+            id.find_first_of(L"\\/:*?\"<>|") != std::wstring::npos ||
+            std::any_of(id.begin(), id.end(), [](wchar_t c) { return c < 32; })) return false;
+        auto key = id;
+        std::transform(key.begin(), key.end(), key.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+        if (!identifiers.insert(std::move(key)).second || fence.folderPath.find(L'\0') != std::wstring::npos) return false;
+        for (const auto& path : fence.memberPaths) if (path.find(L'\0') != std::wstring::npos) return false;
+    }
+    return true;
+}
+
 ConfigLoadStatus LoadConfigFile(const std::wstring& path,
                                 std::vector<Fence>& fences, int& version) {
     fences.clear();
@@ -105,7 +123,7 @@ ConfigLoadStatus LoadConfigFile(const std::wstring& path,
     }
     if (fileSize.QuadPart <= 0 ||
         fileSize.QuadPart >
-            static_cast<LONGLONG>((std::numeric_limits<int>::max)())) {
+            64LL * 1024 * 1024) {
         CloseHandle(file);
         return ConfigLoadStatus::Corrupt;
     }
@@ -142,7 +160,7 @@ ConfigLoadStatus LoadConfigFile(const std::wstring& path,
 
     std::vector<Fence> parsedFences;
     int parsedVersion = 0;
-    if (!JsonDeserialize(decoded, parsedFences, &parsedVersion)) {
+    if (!JsonDeserialize(decoded, parsedFences, &parsedVersion) || !ValidFencePaths(parsedFences)) {
         return ConfigLoadStatus::Corrupt;
     }
     fences = std::move(parsedFences);
@@ -173,7 +191,7 @@ std::wstring FromUtf8(const std::string& value) {
 }
 
 template <typename T>
-bool WriteValue(std::ofstream& stream, const T& value) {
+bool WriteValue(std::ostream& stream, const T& value) {
     stream.write(reinterpret_cast<const char*>(&value), sizeof(T));
     return stream.good();
 }
@@ -289,8 +307,7 @@ bool ConfigService::BackupLayout(
     const std::string config = ToUtf8(JsonSerialize(fences));
     if (config.empty()) return false;
 
-    std::ofstream stream(std::filesystem::path(backupPath), std::ios::binary | std::ios::trunc);
-    if (!stream.is_open()) return false;
+    std::ostringstream stream(std::ios::binary);
     stream.write(BackupMagic, sizeof(BackupMagic) - 1);
     const uint32_t configLength = static_cast<uint32_t>(config.size());
     if (!WriteValue(stream, configLength)) return false;
@@ -306,7 +323,7 @@ bool ConfigService::BackupLayout(
         const int32_t y = item.position.y;
         if (!WriteValue(stream, x) || !WriteValue(stream, y)) return false;
     }
-    return stream.good();
+    return stream.good() && AtomicFile::Write(backupPath, stream.str());
 }
 
 bool ConfigService::RestoreLayout(
@@ -328,7 +345,7 @@ bool ConfigService::RestoreLayout(
     }
     std::string config(configLength, 0);
     stream.read(config.data(), config.size());
-    if (!stream.good() || !JsonDeserialize(FromUtf8(config), fences, nullptr) || fences.empty()) {
+    if (!stream.good() || !JsonDeserialize(FromUtf8(config), fences, nullptr) || !ValidFencePaths(fences)) {
         return false;
     }
 

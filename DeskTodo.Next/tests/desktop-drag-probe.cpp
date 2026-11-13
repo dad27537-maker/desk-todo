@@ -253,6 +253,27 @@ int wmain(int argc, wchar_t** argv) {
         return 0;
     }
 
+    if (argc > 2 && wcscmp(argv[1], L"--restore-positions") == 0 && (argc - 2) % 3 == 0) {
+        if (FAILED(OleInitialize(nullptr))) return 3;
+        std::vector<std::pair<std::wstring, POINT>> positions;
+        for (int index = 2; index < argc; index += 3) {
+            positions.push_back({argv[index], {_wtoi(argv[index + 1]), _wtoi(argv[index + 2])}});
+        }
+        const bool requested = DesktopShellService::TryRestoreDesktopPositions(positions);
+        Sleep(250);
+        size_t confirmed = 0;
+        for (const auto& position : positions) {
+            POINT actual{};
+            if (DesktopShellService::GetPathPositionOnDesktop(position.first, actual) &&
+                std::abs(actual.x - position.second.x) <= 1 &&
+                std::abs(actual.y - position.second.y) <= 1) ++confirmed;
+        }
+        std::wcout << L"layout-requested=" << requested << L" confirmed=" << confirmed
+                   << L" targets=" << positions.size() << L"\n";
+        OleUninitialize();
+        return confirmed == positions.size() ? 0 : 7;
+    }
+
     if (argc == 5 && wcscmp(argv[1], L"--restore-path") == 0) {
         if (FAILED(OleInitialize(nullptr))) return 3;
         const std::wstring path = argv[2];

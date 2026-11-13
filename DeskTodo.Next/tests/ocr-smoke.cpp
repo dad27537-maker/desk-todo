@@ -50,7 +50,8 @@ HBITMAP ReadImage(const std::filesystem::path& path) {
     return bitmap;
 }
 HBITMAP Render(const wchar_t* text, int width, int height, int size,
-               COLORREF foreground = RGB(0, 0, 0), COLORREF background = RGB(255, 255, 255)) {
+               COLORREF foreground = RGB(0, 0, 0), COLORREF background = RGB(255, 255, 255),
+               const wchar_t* fontFamily = L"SimSun") {
     HDC screen = GetDC(nullptr), dc = CreateCompatibleDC(screen);
     HBITMAP bitmap = CreateCompatibleBitmap(screen, width, height);
     auto oldBitmap = SelectObject(dc, bitmap);
@@ -59,7 +60,7 @@ HBITMAP Render(const wchar_t* text, int width, int height, int size,
     FillRect(dc, &area, brush);
     DeleteObject(brush);
     HFONT font = CreateFontW(-size, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"SimSun");
+                            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, fontFamily);
     auto oldFont = SelectObject(dc, font);
     SetTextColor(dc, foreground);
     SetBkMode(dc, TRANSPARENT);
@@ -97,6 +98,19 @@ int wmain(int argc, wchar_t** argv) {
             << " ms]: " << Utf8(success ? text : error) << '\n';
         if (!passed) ++failed;
     };
+    auto checkLanguage = [&](const char* name, const std::wstring& tag,
+                             HBITMAP bitmap, const std::wstring& expected) {
+        ++checked;
+        // A reused output must not retain old text or an old failure message.
+        std::wstring text = L"stale text", error = L"stale error";
+        const bool success = OcrService::RecognizeBitmapForLanguage(bitmap, text, error, tag);
+        const bool passed = bitmap && success && error.empty() &&
+            Compact(text).find(Compact(expected)) != std::wstring::npos;
+        DeleteObject(bitmap);
+        std::cout << (passed ? "PASS " : "FAIL ") << name << ": "
+                  << Utf8(success ? text : error) << '\n';
+        if (!passed) ++failed;
+    };
     if (argc > 2 && std::wstring(argv[1]) == L"--image") {
         check("supplied image", ReadImage(argv[2]), argc > 3 ? argv[3] : L"文档");
     } else {
@@ -107,10 +121,48 @@ int wmain(int argc, wchar_t** argv) {
         check("English and digits", Render(L"DESKTODO OCR 12345", 1000, 150, 64), L"DESKTODO OCR 12345");
         check("multiline Chinese and English", Render(L"中文文字识别\r\nDeskTodo 2026", 500, 150, 32), L"中文文字识别DeskTodo 2026");
         check("blank", Render(L"", 65, 43, 18), L"");
+        checkLanguage("explicit English OCR", L"en",
+                      Render(L"DESKTODO OCR 12345", 1000, 150, 64), L"DESKTODO OCR 12345");
+        checkLanguage("auto source retains existing OCR", L"auto",
+                      Render(L"文档", 65, 43, 18), L"文档");
+#if defined(DESKTODO_HAS_PADDLE_OCR)
+        checkLanguage("explicit Japanese OCR", L"ja",
+                      Render(L"こんにちは世界", 700, 120, 48, RGB(0, 0, 0), RGB(255, 255, 255), L"Meiryo"),
+                      L"こんにちは世界");
+        checkLanguage("explicit French OCR", L"fr",
+                      Render(L"Bonjour le monde", 700, 120, 48), L"Bonjour le monde");
+#endif
+        HBITMAP unsupportedBitmap = Render(L"文档", 65, 43, 18);
+        std::wstring unsupportedText = L"stale text", unsupportedError = L"stale error";
+        ++checked;
+        const bool unsupportedSuccess = OcrService::RecognizeBitmapForLanguage(
+            unsupportedBitmap, unsupportedText, unsupportedError, L"zz-ZZ");
+        DeleteObject(unsupportedBitmap);
+        const bool unsupportedPassed = !unsupportedSuccess && unsupportedText.empty() &&
+            unsupportedError.find(L"zz-ZZ") != std::wstring::npos &&
+            unsupportedError.find(L"OCR 语言包") != std::wstring::npos;
+        std::cout << (unsupportedPassed ? "PASS " : "FAIL ")
+                  << "unavailable source never uses Chinese fallback: " << Utf8(unsupportedError) << '\n';
+        if (!unsupportedPassed) ++failed;
+        std::wstring invalidText = L"stale text", invalidError = L"stale error";
+        ++checked;
+        if (OcrService::RecognizeBitmapForLanguage(nullptr, invalidText, invalidError, L"en") ||
+            !invalidText.empty() || invalidError.empty()) ++failed;
+        HBITMAP blankBitmap = Render(L"", 65, 43, 18);
+        invalidText = L"stale text";
+        ++checked;
+        if (OcrService::RecognizeBitmapForLanguage(blankBitmap, invalidText, invalidError, L"en") ||
+            !invalidText.empty() || invalidError.empty()) ++failed;
+        DeleteObject(blankBitmap);
         std::wstring text, error;
         ++checked;
         if (OcrService::RecognizeBitmap(nullptr, text, error) || error.empty()) ++failed;
         const auto latex = OcrService::ConvertTextToLatex(L"x² + y₂ ≤ 4 × π + a/b");
+        ++checked;
+        if (OcrService::ConvertTextToLatex(L"a\r\nb") != OcrService::ConvertTextToLatex(L"a\nb")) {
+            std::cerr << "FAIL LaTeX CRLF normalization\n";
+            ++failed;
+        }
         ++checked;
         if (latex.find(L"x^{2}") == std::wstring::npos || latex.find(L"y_{2}") == std::wstring::npos ||
             latex.find(L"\\le") == std::wstring::npos || latex.find(L"\\frac{a}{b}") == std::wstring::npos) ++failed;

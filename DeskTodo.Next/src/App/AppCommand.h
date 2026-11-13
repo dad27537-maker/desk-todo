@@ -24,7 +24,8 @@ inline constexpr wchar_t LanTransfer[] = L"lan-transfer";
 inline constexpr wchar_t ToggleBlackHoleBg[] = L"toggle-blackhole-bg";
 inline constexpr wchar_t Exit[] = L"exit";
 
-std::wstring ParseCommandLine();
+std::wstring ParseCommandLine(const wchar_t* commandLine = nullptr);
+bool DecodeForwardedCommand(const void* bytes, size_t size, std::wstring& command);
 std::wstring SingleInstanceMutexName();
 std::wstring ShowEventName();
 bool SendToRunningInstance(const std::wstring& command);

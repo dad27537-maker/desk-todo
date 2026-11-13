@@ -19,6 +19,7 @@ public:
     HWND Handle() const { return window_; }
 
 private:
+    friend struct WidgetTestAccess;
     HINSTANCE instance_ = nullptr;
     HWND window_ = nullptr;
     HWND input_ = nullptr;

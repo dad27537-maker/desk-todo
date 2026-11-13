@@ -184,6 +184,14 @@ public:
     }
 
     bool SkipValue() {
+        // Unknown extension fields still need bounded nesting: a damaged
+        // configuration must not exhaust the UI thread's stack on startup.
+        if (depth_ >= 64) return false;
+        struct DepthScope {
+            size_t& depth;
+            explicit DepthScope(size_t& value) : depth(value) { ++depth; }
+            ~DepthScope() { --depth; }
+        } scope(depth_);
         SkipWhitespace();
         if (position_ >= text_.size()) return false;
         if (text_[position_] == L'"') {
@@ -268,6 +276,7 @@ private:
 
     const std::wstring& text_;
     size_t position_ = 0;
+    size_t depth_ = 0;
 };
 
 bool ParseInteger(JsonReader& reader, int& value) {

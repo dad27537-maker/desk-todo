@@ -28,6 +28,7 @@ bool CopyEditText(HWND window) {
         (text.size() + 1) * sizeof(wchar_t));
     if (!memory) return false;
     void* target = GlobalLock(memory);
+    if (!target) { GlobalFree(memory); return false; }
     memcpy(target, text.c_str(), (text.size() + 1) * sizeof(wchar_t));
     GlobalUnlock(memory);
     if (!OpenClipboard(window)) { GlobalFree(memory); return false; }
@@ -143,12 +144,15 @@ void OcrResultWindow::Show(HWND owner, const std::wstring& text,
     ShowWindow(window, SW_SHOW);
     SetForegroundWindow(window);
     MSG message{};
-    while (IsWindow(window) && GetMessageW(&message, nullptr, 0, 0) > 0) {
+    BOOL status = 1;
+    while (IsWindow(window) && (status = GetMessageW(&message, nullptr, 0, 0)) > 0) {
         if (!IsDialogMessageW(window, &message)) {
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
     }
+    if (IsWindow(window)) DestroyWindow(window);
+    if (status == 0) PostQuitMessage(static_cast<int>(message.wParam));
     if (owner) {
         EnableWindow(owner, TRUE);
         SetForegroundWindow(owner);

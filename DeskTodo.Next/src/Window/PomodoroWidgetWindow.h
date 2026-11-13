@@ -15,6 +15,7 @@ public:
     HWND Handle() const { return window_; }
 
 private:
+    friend struct WidgetTestAccess;
     struct PersistedState {
         DWORD magic = 0x504F4D4F;
         DWORD version = 1;
@@ -26,6 +27,8 @@ private:
     HINSTANCE instance_ = nullptr;
     HWND window_ = nullptr;
     PomodoroTimerState timer_{};
+    ULONGLONG lastTickMs_ = 0;
+    ULONGLONG remainderMs_ = 0;
     RECT savedRect_{};
     bool shouldRestore_ = false;
     bool dragging_ = false;
@@ -36,6 +39,7 @@ private:
     void LoadState();
     void SaveState(bool visible);
     void ToggleTimer();
+    bool AdvanceTimer();
     float UiScale() const;
     int Scale(int value) const;
     void Paint(HDC dc);

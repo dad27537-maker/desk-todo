@@ -9,18 +9,9 @@ add_compile_options("/utf-8" "/Zc:preprocessor")
 add_definitions(-DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -D_NOMINMAX -D_CRT_SECURE_NO_WARNINGS)
 
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp" "src/*.h" "src/*.rc")
-list(FILTER SOURCES EXCLUDE REGEX "Components/BlackHole/(BlackHoleComponent|D3D11BlackHoleBackend)\\.cpp$")
+list(FILTER SOURCES EXCLUDE REGEX "Components/BlackHole/(GhosttyBlackHolePort|GhosttyConfigCompat)\\.cpp$")
 add_executable(DeskTodo.Next WIN32 ${SOURCES})
-set(GHOSTTY_BH_ROOT "${CMAKE_SOURCE_DIR}/../reference_repos/ghostty-blackhole-main-old")
-target_sources(DeskTodo.Next PRIVATE
-    "${GHOSTTY_BH_ROOT}/src/capture_wgc.cpp"
-    "${GHOSTTY_BH_ROOT}/src/capture_dxgi.cpp"
-    "${GHOSTTY_BH_ROOT}/src/gl_texture.cpp"
-    "${GHOSTTY_BH_ROOT}/src/win32_gl.cpp"
-    "${GHOSTTY_BH_ROOT}/src/monitors.cpp")
-target_include_directories(DeskTodo.Next PRIVATE src
-    "src/Components/BlackHole/GhosttyCompat"
-    "${GHOSTTY_BH_ROOT}/src")
+target_include_directories(DeskTodo.Next PRIVATE src)
 if(MSVC)
     target_compile_options(DeskTodo.Next PRIVATE "/FIWindows.h")
     target_link_options(DeskTodo.Next PRIVATE
@@ -32,24 +23,12 @@ endif()
 target_link_libraries(DeskTodo.Next PRIVATE
     d2d1 dwrite shell32 shcore comctl32 comdlg32 gdi32 msimg32 ole32 oleaut32
     runtimeobject windowsapp windowscodecs user32 kernel32 advapi32 delayimp
-    d3d11 dxgi d3dcompiler ws2_32 iphlpapi opengl32 dwmapi wtsapi32 avrt)
-
-add_custom_command(TARGET DeskTodo.Next POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${GHOSTTY_BH_ROOT}/blackhole.glsl" "$<TARGET_FILE_DIR:DeskTodo.Next>/blackhole.glsl"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${GHOSTTY_BH_ROOT}/blackhole_presets.txt" "$<TARGET_FILE_DIR:DeskTodo.Next>/blackhole_presets.txt")
-
-# Some revisions embed the shaders in C++ and do not ship this optional
-# directory. Keep the post-build step valid for both source layouts.
-if(EXISTS "${GHOSTTY_BH_ROOT}/shaders")
-    add_custom_command(TARGET DeskTodo.Next POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${GHOSTTY_BH_ROOT}/shaders" "$<TARGET_FILE_DIR:DeskTodo.Next>/shaders")
-endif()
+    d3d11 dxgi d3dcompiler ws2_32 iphlpapi opengl32 dwmapi wtsapi32 avrt
+    winhttp elscore gdiplus uxtheme)
 
 add_executable(DeskTodoNativeSmoke
     tests/native-smoke.cpp
+    src/App/AppCommand.cpp
     src/Services/FileMoveService.cpp
     src/Services/FileService.cpp
     src/Services/ConfigService.cpp
@@ -136,6 +115,16 @@ target_compile_definitions(DeskTodoOcrSmoke PRIVATE
 target_link_libraries(DeskTodoOcrSmoke PRIVATE
     gdi32 ole32 runtimeobject windowsapp windowscodecs user32 kernel32)
 
+add_executable(DeskTodoTranslationLiveSmoke
+    tests/translation-live-smoke.cpp
+    src/Services/TranslationService.cpp
+    src/Services/DesktopPathService.cpp
+    src/Services/OcrService.cpp
+    src/Services/PaddleOcrService.cpp)
+target_include_directories(DeskTodoTranslationLiveSmoke PRIVATE src)
+target_link_libraries(DeskTodoTranslationLiveSmoke PRIVATE
+    gdi32 user32 kernel32 shell32 ole32 runtimeobject windowsapp windowscodecs winhttp elscore)
+
 # setup-ocr.ps1 installs pinned offline OCR dependencies. Other builds retain
 # the enhanced Windows OCR fallback.
 set(OCR_DEPS "${CMAKE_CURRENT_SOURCE_DIR}/deps/ocr")
@@ -145,7 +134,7 @@ if(EXISTS "${ORT_INCLUDE}/onnxruntime_cxx_api.h" AND
    EXISTS "${OPENCV_ROOT}/x64/vc16/lib/opencv_world4120.lib" AND
    EXISTS "${OCR_DEPS}/runtime/PP-OCRv6_rec_medium.onnx" AND
    EXISTS "${OCR_DEPS}/runtime/PP-OCRv6_det_medium.onnx")
-    foreach(OCR_TARGET DeskTodo.Next DeskTodoOcrSmoke)
+    foreach(OCR_TARGET DeskTodo.Next DeskTodoOcrSmoke DeskTodoTranslationLiveSmoke)
         target_compile_definitions(${OCR_TARGET} PRIVATE DESKTODO_HAS_PADDLE_OCR=1)
         target_include_directories(${OCR_TARGET} SYSTEM PRIVATE
             "${ORT_INCLUDE}" "${OPENCV_ROOT}/include")
@@ -166,6 +155,22 @@ add_executable(DeskTodoOcrResultSmoke
     src/Window/OcrResultWindow.cpp)
 target_include_directories(DeskTodoOcrResultSmoke PRIVATE src)
 target_link_libraries(DeskTodoOcrResultSmoke PRIVATE gdi32 user32 kernel32)
+
+add_executable(DeskTodoTranslationSmoke
+    tests/translation-smoke.cpp
+    src/Services/TranslationService.cpp
+    src/Services/DesktopPathService.cpp)
+target_include_directories(DeskTodoTranslationSmoke PRIVATE src)
+target_link_libraries(DeskTodoTranslationSmoke PRIVATE
+    gdi32 user32 kernel32 shell32 ole32 runtimeobject windowsapp windowscodecs
+    winhttp elscore)
+
+add_executable(DeskTodoTranslationWindowSmoke
+    tests/translation-window-smoke.cpp
+    src/Window/TranslationWindow.cpp)
+target_include_directories(DeskTodoTranslationWindowSmoke PRIVATE src)
+target_link_libraries(DeskTodoTranslationWindowSmoke PRIVATE
+    gdi32 user32 kernel32 shell32 ole32 gdiplus uxtheme dwmapi comctl32)
 
 add_executable(DeskTodoScreenshotOcrSmoke
     tests/screenshot-ocr-smoke.cpp
@@ -188,3 +193,33 @@ add_executable(DeskTodoBlackHoleSmoke
 target_include_directories(DeskTodoBlackHoleSmoke PRIVATE src)
 target_link_libraries(DeskTodoBlackHoleSmoke PRIVATE
     shell32 ole32 user32 kernel32)
+
+add_executable(DeskTodoWidgetSmoke tests/widget-smoke.cpp
+    src/Window/TodoWidgetWindow.cpp src/Window/PomodoroWidgetWindow.cpp src/Services/DesktopPathService.cpp)
+target_include_directories(DeskTodoWidgetSmoke PRIVATE src)
+target_link_libraries(DeskTodoWidgetSmoke PRIVATE shell32 ole32 user32 gdi32 comctl32)
+
+add_executable(DeskTodoBlackHoleRenderSmoke tests/black-hole-render-smoke.cpp
+    src/Components/BlackHole/D3D11BlackHoleBackend.cpp)
+target_include_directories(DeskTodoBlackHoleRenderSmoke PRIVATE src)
+target_link_libraries(DeskTodoBlackHoleRenderSmoke PRIVATE d3d11 dxgi d3dcompiler)
+
+enable_testing()
+set(DESKTODO_SMOKE_TARGETS DeskTodoNativeSmoke DeskTodoAsyncFileMoveSmoke DeskTodoFenceRendererSmoke
+    DeskTodoLogicalFenceSmoke DeskTodoIconCacheSmoke DeskTodoOleFileMoveSmoke DeskTodoOcrSmoke
+    DeskTodoOcrResultSmoke DeskTodoTranslationSmoke DeskTodoTranslationWindowSmoke
+    DeskTodoScreenshotOcrSmoke DeskTodoLanTransferSmoke DeskTodoBlackHoleSmoke
+    DeskTodoWidgetSmoke DeskTodoBlackHoleRenderSmoke)
+foreach(SMOKE IN LISTS DESKTODO_SMOKE_TARGETS)
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/test-runtime/${SMOKE}")
+    add_test(NAME ${SMOKE} COMMAND $<TARGET_FILE:${SMOKE}>)
+    set_tests_properties(${SMOKE} PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/test-runtime/${SMOKE}")
+endforeach()
+find_program(NODE_EXECUTABLE node)
+if(NODE_EXECUTABLE)
+    add_test(NAME DeskTodoLanPageSmoke COMMAND "${NODE_EXECUTABLE}"
+        "${CMAKE_SOURCE_DIR}/tests/lan-transfer-page-smoke.cjs"
+        "${CMAKE_BINARY_DIR}/test-runtime/DeskTodoLanTransferSmoke/lan-transfer-smoke-page.html")
+    set_tests_properties(DeskTodoLanPageSmoke PROPERTIES DEPENDS DeskTodoLanTransferSmoke TIMEOUT 30)
+endif()

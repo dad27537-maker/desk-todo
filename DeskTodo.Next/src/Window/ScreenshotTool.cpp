@@ -4,6 +4,7 @@
 #include "Services/DesktopPathService.h"
 #include "Services/OcrService.h"
 #include "Window/OcrResultWindow.h"
+#include "Window/TranslationWindow.h"
 
 #include <ShlObj.h>
 #include <algorithm>
@@ -92,7 +93,7 @@ constexpr CaptureAction ToolbarActions[] = {
     CaptureAction::Cancel, CaptureAction::Pin, CaptureAction::Save,
     CaptureAction::Copy, CaptureAction::Ocr, CaptureAction::LatexOcr,
     CaptureAction::Move, CaptureAction::Pen, CaptureAction::Arrow,
-    CaptureAction::Text, CaptureAction::Rectangle, CaptureAction::Clear
+    CaptureAction::Text, CaptureAction::Rectangle, CaptureAction::Clear, CaptureAction::Translate
 };
 
 const wchar_t* CaptureActionHint(CaptureAction action) {
@@ -103,6 +104,7 @@ const wchar_t* CaptureActionHint(CaptureAction action) {
     case CaptureAction::Copy: return L"复制";
     case CaptureAction::Ocr: return L"文字识别";
     case CaptureAction::LatexOcr: return L"LaTeX 识别";
+    case CaptureAction::Translate: return L"截图翻译";
     case CaptureAction::Move: return L"移动选区";
     case CaptureAction::Pen: return L"画笔";
     case CaptureAction::Arrow: return L"箭头";
@@ -165,6 +167,17 @@ void DrawCaptureIcon(HDC dc, RECT area, CaptureAction action, COLORREF color) {
         SetTextColor(dc, color);
         DrawTextW(dc, L"∑", -1, &area, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         SelectObject(dc, oldFont);
+        DeleteObject(symbol);
+        break;
+    }
+    case CaptureAction::Translate: {
+        HFONT symbol = CreateFontW(-17, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE,
+            FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+        HGDIOBJ previous = SelectObject(dc, symbol);
+        SetTextColor(dc, color);
+        DrawTextW(dc, L"文A", -1, &area, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(dc, previous);
         DeleteObject(symbol);
         break;
     }
@@ -309,12 +322,18 @@ bool ScreenshotTool::CaptureVirtualScreen() {
         GetSystemMetrics(SM_YVIRTUALSCREEN) + GetSystemMetrics(SM_CYVIRTUALSCREEN) };
     const int width = virtualScreen_.right - virtualScreen_.left;
     const int height = virtualScreen_.bottom - virtualScreen_.top;
+    if (width <= 0 || height <= 0) return false;
     HDC screen = GetDC(nullptr);
+    if (!screen) return false;
     HDC memory = CreateCompatibleDC(screen);
     screenBitmap_ = CreateCompatibleBitmap(screen, width, height);
-    if (!screen) CaptureDiag(L"CaptureVirtualScreen: GetDC failed");
-    if (!memory) CaptureDiag(L"CaptureVirtualScreen: CreateCompatibleDC failed");
-    if (!screenBitmap_) CaptureDiag(L"CaptureVirtualScreen: CreateCompatibleBitmap failed");
+    if (!memory || !screenBitmap_) {
+        if (memory) DeleteDC(memory);
+        if (screenBitmap_) DeleteObject(screenBitmap_);
+        screenBitmap_ = nullptr;
+        ReleaseDC(nullptr, screen);
+        return false;
+    }
     HGDIOBJ old = SelectObject(memory, screenBitmap_);
     // CAPTUREBLT includes DeskTodo's full-screen layered overlay and can turn the
     // composed result black on some GPU/driver combinations. SRCCOPY captures
@@ -355,6 +374,9 @@ bool ScreenshotTool::StartCapture() {
     cursorPositionValid_ = true;
     selecting_ = false;
     selectionReady_ = false;
+    movingSelection_ = false;
+    annotating_ = false;
+    resizingEdges_ = CaptureRegion::None;
     activeTool_ = CaptureAction::Move;
     strokes_.clear();
     arrows_.clear();
@@ -421,6 +443,9 @@ void ScreenshotTool::CancelCapture() {
     DestroyCaptureBuffer();
     selecting_ = false;
     selectionReady_ = false;
+    movingSelection_ = false;
+    annotating_ = false;
+    resizingEdges_ = CaptureRegion::None;
 }
 
 void ScreenshotTool::PaintCapture(HDC dc) {
@@ -440,7 +465,10 @@ void ScreenshotTool::PaintCapture(HDC dc) {
         BitBlt(dc, selected.left, selected.top,
                selected.right - selected.left, selected.bottom - selected.top,
                source, selected.left, selected.top, SRCCOPY);
+        const int savedDc = SaveDC(dc);
+        IntersectClipRect(dc, selected.left, selected.top, selected.right, selected.bottom);
         PaintAnnotations(dc, { virtualScreen_.left, virtualScreen_.top });
+        RestoreDC(dc, savedDc);
         HPEN pen = CreatePen(PS_SOLID, 2, RGB(65, 203, 231));
         HGDIOBJ oldPen = SelectObject(dc, pen);
         HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
@@ -448,6 +476,19 @@ void ScreenshotTool::PaintCapture(HDC dc) {
         SelectObject(dc, oldBrush);
         SelectObject(dc, oldPen);
         DeleteObject(pen);
+        if (selectionReady_) {
+            const LONG middleX = (selected.left + selected.right) / 2;
+            const LONG middleY = (selected.top + selected.bottom) / 2;
+            const POINT handles[] = {
+                {selected.left, selected.top}, {middleX, selected.top}, {selected.right, selected.top},
+                {selected.left, middleY}, {selected.right, middleY},
+                {selected.left, selected.bottom}, {middleX, selected.bottom}, {selected.right, selected.bottom}
+            };
+            for (const POINT point : handles) {
+                FillArea(dc, {point.x - 4, point.y - 4, point.x + 5, point.y + 5}, RGB(65, 203, 231));
+                FillArea(dc, {point.x - 2, point.y - 2, point.x + 3, point.y + 3}, RGB(250, 250, 250));
+            }
+        }
         wchar_t dimensions[64]{};
         swprintf_s(dimensions, L"%ld × %ld", selection_.right - selection_.left,
                    selection_.bottom - selection_.top);
@@ -988,31 +1029,15 @@ bool ScreenshotTool::CopyToClipboard(HBITMAP bitmap) {
 
 bool ScreenshotTool::SavePinnedAs() {
     if (!pinnedBitmap_) return false;
-    std::wstring suggested = lastSavedPath_.empty() ? CreateSavePath() : lastSavedPath_;
-    wchar_t path[32768]{};
-    wcsncpy_s(path, suggested.c_str(), _TRUNCATE);
-    OPENFILENAMEW dialog{ sizeof(dialog) };
-    dialog.hwndOwner = pinWindow_;
-    dialog.lpstrFilter = L"PNG 图像 (*.png)\0*.png\0所有文件 (*.*)\0*.*\0\0";
-    dialog.lpstrFile = path;
-    dialog.nMaxFile = static_cast<DWORD>(std::size(path));
-    dialog.lpstrDefExt = L"png";
-    dialog.Flags = OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
-    if (!GetSaveFileNameW(&dialog)) return CommDlgExtendedError() == 0;
-    if (!SavePng(pinnedBitmap_, path)) {
-        MessageBoxW(pinWindow_, L"无法保存截图，请选择其他文件夹后重试。",
-                    L"DeskTodo 截图", MB_OK | MB_ICONERROR);
-        return false;
-    }
-    lastSavedPath_ = path;
-    lastSaveSucceeded_ = true;
+    if (!SaveBitmapAs(pinnedBitmap_, pinWindow_)) return false;
     SetWindowTextW(pinWindow_, lastSavedPath_.c_str());
     return true;
 }
 
 bool ScreenshotTool::SaveBitmapAs(HBITMAP bitmap, HWND owner) {
     if (!bitmap) return false;
-    const std::wstring suggested = CreateSavePath();
+    std::filesystem::path suggested = CreateSavePath();
+    if (!lastSaveDirectory_.empty()) suggested = std::filesystem::path(lastSaveDirectory_) / suggested.filename();
     wchar_t path[32768]{};
     wcsncpy_s(path, suggested.c_str(), _TRUNCATE);
     OPENFILENAMEW dialog{ sizeof(dialog) };
@@ -1021,8 +1046,14 @@ bool ScreenshotTool::SaveBitmapAs(HBITMAP bitmap, HWND owner) {
     dialog.lpstrFile = path;
     dialog.nMaxFile = static_cast<DWORD>(std::size(path));
     dialog.lpstrDefExt = L"png";
-    dialog.Flags = OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
-    if (!GetSaveFileNameW(&dialog)) return false;
+    dialog.lpstrTitle = L"保存截图";
+    dialog.Flags = OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetSaveFileNameW(&dialog)) {
+        if (CommDlgExtendedError() != 0) {
+            MessageBoxW(owner, L"无法打开保存窗口，请重试。", L"DeskTodo 截图", MB_OK | MB_ICONERROR);
+        }
+        return false;
+    }
     if (!SavePng(bitmap, path)) {
         MessageBoxW(owner, L"无法保存截图，请选择其他文件夹后重试。",
                     L"DeskTodo 截图", MB_OK | MB_ICONERROR);
@@ -1030,6 +1061,7 @@ bool ScreenshotTool::SaveBitmapAs(HBITMAP bitmap, HWND owner) {
     }
     lastSavedPath_ = path;
     lastSaveSucceeded_ = true;
+    lastSaveDirectory_ = std::filesystem::path(path).parent_path().wstring();
     return true;
 }
 
@@ -1085,6 +1117,9 @@ void ScreenshotTool::ExecuteCaptureAction(CaptureAction action) {
         InvalidateRect(captureWindow_, nullptr, FALSE);
         return;
     }
+    // Finish manipulation before exporting, including the annotation offsets.
+    // WM_CAPTURECHANGED must run before the save dialog blocks mouse messages.
+    if (GetCapture() == captureWindow_) ReleaseCapture();
     HBITMAP bitmap = CreateSelectionBitmap();
     if (!bitmap) {
         MessageBoxW(captureWindow_, L"无法读取选区内容，请重新选择。",
@@ -1100,12 +1135,16 @@ void ScreenshotTool::ExecuteCaptureAction(CaptureAction action) {
         return;
     }
     if (action == CaptureAction::Save) {
-        lastSavedPath_ = CreateSavePath();
-        lastSaveSucceeded_ = SavePng(bitmap, lastSavedPath_);
+        saving_ = true;
+        if (GetCapture() == captureWindow_) ReleaseCapture();
+        const bool saved = SaveBitmapAs(bitmap, captureWindow_);
+        saving_ = false;
         DeleteObject(bitmap);
-        if (lastSaveSucceeded_) CancelCapture();
-        else MessageBoxW(captureWindow_, L"无法保存截图，请检查图片文件夹权限。",
-                         L"DeskTodo 截图", MB_OK | MB_ICONERROR);
+        if (saved) CancelCapture();
+        else {
+            SetForegroundWindow(captureWindow_);
+            InvalidateRect(captureWindow_, nullptr, FALSE);
+        }
         return;
     }
     if (action == CaptureAction::Copy) {
@@ -1114,6 +1153,12 @@ void ScreenshotTool::ExecuteCaptureAction(CaptureAction action) {
         if (copied) CancelCapture();
         else MessageBoxW(captureWindow_, L"无法复制截图到剪贴板。",
                          L"DeskTodo 截图", MB_OK | MB_ICONERROR);
+        return;
+    }
+    if (action == CaptureAction::Translate) {
+        GdiFlush();
+        CancelCapture();
+        TranslationWindow::Show(nullptr, bitmap);
         return;
     }
     if (action == CaptureAction::Ocr || action == CaptureAction::LatexOcr) {
@@ -1269,15 +1314,44 @@ LRESULT CALLBACK ScreenshotTool::CaptureWindowProc(HWND window, UINT message,
     return self ? self->OnCaptureMessage(message, wp, lp) : DefWindowProcW(window, message, wp, lp);
 }
 
+void ScreenshotTool::UpdateCaptureCursor(POINT screenPoint) {
+    LPCWSTR cursor = IDC_CROSS;
+    if (ocrWork_ || saving_) cursor = IDC_APPSTARTING;
+    else if (selectionReady_ && !selecting_) {
+        const auto toolbar = CaptureToolbar::Build(selection_, virtualScreen_);
+        const auto properties = CaptureToolbar::BuildProperty(toolbar, virtualScreen_, activeTool_ == CaptureAction::Text);
+        const bool overControls = PtInRect(&toolbar.bounds, screenPoint) ||
+            (IsStyleToolActive() && PtInRect(&properties.bounds, screenPoint));
+        const unsigned edges = resizingEdges_ ? resizingEdges_ :
+            (overControls || annotating_ || movingSelection_ ? CaptureRegion::None :
+             CaptureRegion::HitTestResize(selection_, screenPoint));
+        if (edges == (CaptureRegion::Left | CaptureRegion::Top) ||
+            edges == (CaptureRegion::Right | CaptureRegion::Bottom)) cursor = IDC_SIZENWSE;
+        else if (edges == (CaptureRegion::Right | CaptureRegion::Top) ||
+                 edges == (CaptureRegion::Left | CaptureRegion::Bottom)) cursor = IDC_SIZENESW;
+        else if (edges & (CaptureRegion::Left | CaptureRegion::Right)) cursor = IDC_SIZEWE;
+        else if (edges & (CaptureRegion::Top | CaptureRegion::Bottom)) cursor = IDC_SIZENS;
+        else if (movingSelection_ || (!overControls && activeTool_ == CaptureAction::Move &&
+                                     PtInRect(&selection_, screenPoint))) cursor = IDC_SIZEALL;
+        else if (overControls) cursor = IDC_ARROW;
+    }
+    SetCursor(LoadCursorW(nullptr, cursor));
+}
+
 LRESULT ScreenshotTool::OnCaptureMessage(UINT message, WPARAM wp, LPARAM lp) {
+    if (saving_ && (message == WM_LBUTTONDOWN || message == WM_LBUTTONUP ||
+        message == WM_MOUSEMOVE || message == WM_RBUTTONUP || message == WM_KEYDOWN ||
+        message == WM_CHAR || message == WM_CLOSE)) return 0;
     if (ocrWork_ && ((message == WM_LBUTTONDOWN || message == WM_LBUTTONUP ||
                      message == WM_MOUSEMOVE || message == WM_CHAR) ||
                     (message == WM_KEYDOWN && wp != VK_ESCAPE))) return 0;
     switch (message) {
-    case WM_SETCURSOR:
-        SetCursor(LoadCursorW(nullptr, ocrWork_ ? IDC_APPSTARTING :
-            (selectionReady_ && !selecting_ ? IDC_ARROW : IDC_CROSS)));
+    case WM_SETCURSOR: {
+        POINT point{};
+        GetPhysicalCursorPos(&point);
+        UpdateCaptureCursor(point);
         return TRUE;
+    }
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: {
         PAINTSTRUCT paint{};
@@ -1314,6 +1388,15 @@ LRESULT ScreenshotTool::OnCaptureMessage(UINT message, WPARAM wp, LPARAM lp) {
                 ExecuteCaptureAction(action);
                 return 0;
             }
+            resizingEdges_ = CaptureRegion::HitTestResize(selection_, screenPoint);
+            if (resizingEdges_ != CaptureRegion::None) {
+                actionStart_ = screenPoint;
+                moveStartSelection_ = selection_;
+                hoveredHintAction_ = CaptureAction::None;
+                SetCapture(captureWindow_);
+                UpdateCaptureCursor(screenPoint);
+                return 0;
+            }
             if (PtInRect(&selection_, screenPoint)) {
                 actionStart_ = screenPoint;
                 if (activeTool_ == CaptureAction::Move) {
@@ -1345,11 +1428,11 @@ LRESULT ScreenshotTool::OnCaptureMessage(UINT message, WPARAM wp, LPARAM lp) {
         }
         selecting_ = true;
         selectionReady_ = false;
-        SetCursor(LoadCursorW(nullptr, IDC_CROSS));
-        SetCapture(captureWindow_);
-        selectionStart_ = screenPoint;
+        selectionStart_ = CaptureRegion::ClampPoint(screenPoint, virtualScreen_);
         selection_ = { selectionStart_.x, selectionStart_.y,
                        selectionStart_.x, selectionStart_.y };
+        SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+        SetCapture(captureWindow_);
         return 0;
     }
     case WM_MOUSEMOVE: {
@@ -1358,12 +1441,18 @@ LRESULT ScreenshotTool::OnCaptureMessage(UINT message, WPARAM wp, LPARAM lp) {
         cursorPosition_ = hoverPoint;
         cursorPositionValid_ = true;
         CaptureAction hoverAction = CaptureAction::None;
-        if (selectionReady_ && !selecting_ && !movingSelection_ && !annotating_) {
+        if (selectionReady_ && !selecting_ && !movingSelection_ && !annotating_ && !resizingEdges_) {
             hoverAction = CaptureToolbar::HitTest(
                 CaptureToolbar::Build(selection_, virtualScreen_), hoverPoint);
         }
         if (hoverAction != hoveredHintAction_) hoveredHintAction_ = hoverAction;
+        UpdateCaptureCursor(hoverPoint);
         InvalidateRect(captureWindow_, nullptr, FALSE);
+        if (resizingEdges_) {
+            selection_ = CaptureRegion::Resize(moveStartSelection_, resizingEdges_,
+                {hoverPoint.x - actionStart_.x, hoverPoint.y - actionStart_.y}, virtualScreen_);
+            return 0;
+        }
         if (movingSelection_) {
             POINT current{ GET_X_LPARAM(lp) + virtualScreen_.left,
                            GET_Y_LPARAM(lp) + virtualScreen_.top };
@@ -1396,12 +1485,24 @@ LRESULT ScreenshotTool::OnCaptureMessage(UINT message, WPARAM wp, LPARAM lp) {
         if (selecting_) {
             POINT current{ GET_X_LPARAM(lp) + virtualScreen_.left,
                            GET_Y_LPARAM(lp) + virtualScreen_.top };
-            selection_ = CaptureRegion::Normalize(selectionStart_, current);
+            selection_ = CaptureRegion::Normalize(selectionStart_, CaptureRegion::ClampPoint(current, virtualScreen_));
             InvalidateRect(captureWindow_, nullptr, FALSE);
         }
         return 0;
     }
     case WM_LBUTTONUP:
+        // The release can arrive at a newer point than the final mouse move.
+        if (movingSelection_ || annotating_) OnCaptureMessage(WM_MOUSEMOVE, 0, lp);
+        if (resizingEdges_) {
+            POINT current{GET_X_LPARAM(lp) + virtualScreen_.left, GET_Y_LPARAM(lp) + virtualScreen_.top};
+            selection_ = CaptureRegion::Resize(moveStartSelection_, resizingEdges_,
+                {current.x - actionStart_.x, current.y - actionStart_.y}, virtualScreen_);
+            resizingEdges_ = CaptureRegion::None;
+            if (GetCapture() == captureWindow_) ReleaseCapture();
+            UpdateCaptureCursor(current);
+            InvalidateRect(captureWindow_, nullptr, FALSE);
+            return 0;
+        }
         if (movingSelection_ || annotating_) {
             if (movingSelection_) {
                 const LONG dx = selection_.left - moveStartSelection_.left;
@@ -1428,7 +1529,7 @@ LRESULT ScreenshotTool::OnCaptureMessage(UINT message, WPARAM wp, LPARAM lp) {
             if (GetCapture() == captureWindow_) ReleaseCapture();
             POINT current{ GET_X_LPARAM(lp) + virtualScreen_.left,
                            GET_Y_LPARAM(lp) + virtualScreen_.top };
-            selection_ = CaptureRegion::Normalize(selectionStart_, current);
+            selection_ = CaptureRegion::Normalize(selectionStart_, CaptureRegion::ClampPoint(current, virtualScreen_));
             selectionReady_ = CaptureRegion::IsValid(selection_);
             if (selectionReady_) SetCursor(LoadCursorW(nullptr, IDC_ARROW));
             {
@@ -1451,6 +1552,15 @@ LRESULT ScreenshotTool::OnCaptureMessage(UINT message, WPARAM wp, LPARAM lp) {
             if (wp == 'S') { ExecuteCaptureAction(CaptureAction::Save); return 0; }
         }
         break;
+    case WM_CAPTURECHANGED:
+        // SetCapture can notify us even when capture remains on this window.
+        // Only finish a drag when capture actually transfers away.
+        if (reinterpret_cast<HWND>(lp) == captureWindow_) return 0;
+        if (selecting_ || resizingEdges_ || movingSelection_ || annotating_) {
+            OnCaptureMessage(WM_LBUTTONUP, 0, MAKELPARAM(
+                cursorPosition_.x - virtualScreen_.left, cursorPosition_.y - virtualScreen_.top));
+        }
+        return 0;
     case WM_CHAR:
         if (activeTool_ == CaptureAction::Text && selectionReady_) {
             if (wp == VK_RETURN) {

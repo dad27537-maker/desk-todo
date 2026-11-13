@@ -2,8 +2,41 @@
 
 #include <Windows.h>
 #include <algorithm>
+#include <cstdlib>
 
 namespace CaptureRegion {
+
+enum ResizeEdge : unsigned {
+    None = 0, Left = 1, Right = 2, Top = 4, Bottom = 8
+};
+
+inline POINT ClampPoint(POINT point, const RECT& bounds) {
+    return {(std::clamp)(point.x, bounds.left, bounds.right),
+            (std::clamp)(point.y, bounds.top, bounds.bottom)};
+}
+
+inline unsigned HitTestResize(const RECT& region, POINT point, int margin = 6) {
+    if (point.x < region.left - margin || point.x > region.right + margin ||
+        point.y < region.top - margin || point.y > region.bottom + margin) return None;
+    unsigned edges = None;
+    if (std::abs(point.x - region.left) <= margin &&
+        std::abs(point.x - region.left) <= std::abs(point.x - region.right)) edges |= Left;
+    else if (std::abs(point.x - region.right) <= margin) edges |= Right;
+    if (std::abs(point.y - region.top) <= margin &&
+        std::abs(point.y - region.top) <= std::abs(point.y - region.bottom)) edges |= Top;
+    else if (std::abs(point.y - region.bottom) <= margin) edges |= Bottom;
+    return edges;
+}
+
+inline RECT Resize(const RECT& initial, unsigned edges, POINT delta, const RECT& bounds) {
+    constexpr LONG minimum = 6;
+    RECT result = initial;
+    if (edges & Left) result.left = (std::clamp)(initial.left + delta.x, bounds.left, initial.right - minimum);
+    if (edges & Right) result.right = (std::clamp)(initial.right + delta.x, initial.left + minimum, bounds.right);
+    if (edges & Top) result.top = (std::clamp)(initial.top + delta.y, bounds.top, initial.bottom - minimum);
+    if (edges & Bottom) result.bottom = (std::clamp)(initial.bottom + delta.y, initial.top + minimum, bounds.bottom);
+    return result;
+}
 
 inline RECT Normalize(POINT start, POINT end) {
     return { (std::min)(start.x, end.x), (std::min)(start.y, end.y),

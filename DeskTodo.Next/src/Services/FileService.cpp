@@ -79,7 +79,12 @@ bool TryScanFolder(const std::wstring& folderPath, std::vector<DesktopItem>& ite
         if (DescribePath(fullPath, item)) items.push_back(std::move(item));
     } while (FindNextFileW(hFind, &ffd) != 0);
 
+    const DWORD enumerationError = GetLastError();
     FindClose(hFind);
+    if (enumerationError != ERROR_NO_MORE_FILES) {
+        items.clear();
+        return false;
+    }
     return true;
 }
 

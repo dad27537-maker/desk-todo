@@ -30,9 +30,11 @@ class DesktopIconLayoutService {
 public:
     using PositionReader = bool (*)(const std::wstring&, POINT&);
     using PositionWriter = bool (*)(const std::wstring&, POINT);
+    using PositionBatchWriter = bool (*)(const std::vector<std::pair<std::wstring, POINT>>&);
     explicit DesktopIconLayoutService(PositionReader reader = nullptr,
-                                      PositionWriter writer = nullptr)
-        : positionReader_(reader), positionWriter_(writer) {}
+                                      PositionWriter writer = nullptr,
+                                      PositionBatchWriter batchWriter = nullptr)
+        : positionReader_(reader), positionWriter_(writer), positionBatchWriter_(batchWriter) {}
     bool Load();
     bool CaptureStable(
         const MonitorService::DisplayTopologySnapshot& topology,
@@ -79,10 +81,12 @@ private:
     bool WritePosition(const std::wstring& path, POINT point) const;
     PositionReader positionReader_ = nullptr;
     PositionWriter positionWriter_ = nullptr;
+    PositionBatchWriter positionBatchWriter_ = nullptr;
     std::vector<DesktopIconAnchor> anchors_;
     std::vector<PendingRestoreTarget> pendingRestoreTargets_;
     size_t pendingRestoreCursor_ = 0;
     int pendingRestoreRounds_ = 0;
+    bool pendingRestoreBatchSubmitted_ = false;
     // Targets that Explorer has not confirmed. After bounded retry rounds,
     // keep only these paths out of capture until verified or the next recovery.
     std::unordered_map<std::wstring, POINT> unrestoredTargets_;

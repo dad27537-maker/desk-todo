@@ -16,12 +16,13 @@ enum class CaptureAction {
     Arrow,
     Text,
     Rectangle,
-    Clear
+    Clear,
+    Translate
 };
 
 struct CaptureToolbarLayout {
     RECT bounds{};
-    std::array<RECT, 12> buttons{};
+    std::array<RECT, 13> buttons{};
 };
 
 struct CapturePropertyLayout {
@@ -34,7 +35,7 @@ struct CapturePropertyLayout {
 namespace CaptureToolbar {
 
 inline CaptureToolbarLayout Build(const RECT& selection, const RECT& screen,
-                                  int width = 672, int height = 48, int gap = 10) {
+                                  int width = 728, int height = 48, int gap = 10) {
     CaptureToolbarLayout layout;
     LONG left = selection.left;
     LONG top = selection.bottom + gap;
@@ -62,7 +63,7 @@ inline CaptureAction HitTest(const CaptureToolbarLayout& layout, POINT point) {
         CaptureAction::Copy, CaptureAction::Ocr, CaptureAction::LatexOcr,
         CaptureAction::Move,
         CaptureAction::Pen, CaptureAction::Arrow, CaptureAction::Text,
-        CaptureAction::Rectangle, CaptureAction::Clear
+        CaptureAction::Rectangle, CaptureAction::Clear, CaptureAction::Translate
     };
     for (size_t index = 0; index < layout.buttons.size(); ++index) {
         if (PtInRect(&layout.buttons[index], point)) return actions[index];

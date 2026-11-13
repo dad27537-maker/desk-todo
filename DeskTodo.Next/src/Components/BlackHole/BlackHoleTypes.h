@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cmath>
 
 namespace BlackHole {
 
@@ -89,6 +90,14 @@ struct Settings {
     float starBrightness = 0.0f;
 
     static Settings Sanitize(Settings v) {
+        for (float* value : {&v.renderScale, &v.cameraRoll, &v.fovScale, &v.mouseX, &v.mouseY,
+            &v.adiskHeight, &v.adiskLit, &v.adiskDensityV, &v.adiskDensityH, &v.adiskNoiseScale,
+            &v.adiskNoiseLOD, &v.adiskSpeed, &v.bloomStrength, &v.gamma, &v.holeRadius,
+            &v.diskTemperature, &v.diskInclination, &v.diskRoll, &v.diskInnerRadius, &v.diskOuterRadius,
+            &v.diskOpacity, &v.dopplerMix, &v.beamExponent, &v.diskGain, &v.streakContrast,
+            &v.winding, &v.diskRotationSpeed, &v.diskExposure, &v.starBrightness}) {
+            if (!std::isfinite(*value)) *value = 0.0f;
+        }
         v.renderScale = std::clamp(v.renderScale, 0.25f, 1.0f);
         v.maxFps = std::clamp(v.maxFps, 10, 120);
         v.cameraRoll = std::clamp(v.cameraRoll, -180.0f, 180.0f);

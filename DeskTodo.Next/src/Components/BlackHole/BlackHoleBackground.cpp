@@ -7,6 +7,7 @@ BlackHoleBackground::~BlackHoleBackground() { Stop(); }
 
 bool BlackHoleBackground::Start(uint32_t, uint32_t, float) {
     if (IsRunning()) return true;
+    if (process_) { CloseHandle(process_); process_ = nullptr; processId_ = 0; }
     wchar_t executable[32768]{};
     const DWORD length = GetModuleFileNameW(nullptr, executable, static_cast<DWORD>(std::size(executable)));
     if (length == 0 || length >= std::size(executable)) return false;
